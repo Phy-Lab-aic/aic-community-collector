@@ -1,0 +1,20 @@
+[project]
+name = "aic-community-collector"
+version = "0.1.0"
+description = "AIC 챌린지 커뮤니티 데이터 수집 도구"
+requires-python = ">=3.12"
+dependencies = [
+    "streamlit>=1.30",
+    "pyyaml",
+    "numpy",
+]
+
+[project.optional-dependencies]
+lhs = ["scipy"]
+
+[project.scripts]
+aic-collector = "aic_collector.webapp:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

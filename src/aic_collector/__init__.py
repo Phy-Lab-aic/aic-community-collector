@@ -1,0 +1,1 @@
+"""AIC Community Data Collector."""

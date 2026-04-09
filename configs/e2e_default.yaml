@@ -1,0 +1,62 @@
+# EXP-009 E2E 수집 기본 config
+#
+# `scripts/community/collect_e2e.sh`가 이 파일을 읽고 파이프라인을 실행한다.
+# 자주 바꾸는 소수 값(runs, seed 등)은 CLI 오버라이드 가능.
+#
+# 변형 예시:
+#   e2e_default.yaml          — 이 파일 (3 trial, uniform, cheatcode)
+#   e2e_lhs.yaml              — LHS 샘플링 사용
+#   e2e_trial2_only.yaml      — trial 2만 집중 수집
+#   e2e_act_hybrid.yaml       — ACT Hybrid policy 사용
+
+schema_version: "0.1"
+
+collection:
+  runs: 10                                # 반복 횟수
+  trials: [1, 2, 3]                       # 수집할 trial 번호 (부분 수집 시 [2] 등)
+  output_root: ~/aic_community_e2e        # run 저장 루트
+  seed: 42                                # 재현용 seed
+
+policy:
+  # 단일 정책 (F2-a) — 모든 trial에 동일 적용
+  default: cheatcode
+
+  # trial별 다른 policy (F2-b) — default보다 우선. 미구현 시 무시됨.
+  # per_trial:
+  #   1: cheatcode
+  #   2: act
+  #   3: hybrid
+
+  # ACT 계열 inner policy용 모델 경로
+  act_model_path: ~/ws_aic/src/aic/outputs/train/act_aic_v1_backup/checkpoints/last/pretrained_model
+
+parameters:
+  # 랜덤화할 씬 파라미터. 범위는 community_random_config.yaml의 task_board_limits 준용.
+  # 각 항목은 { min, max } 형식 (continuous uniform 또는 LHS의 차원 하나)
+  nic0_translation: { min: -0.0215, max:  0.0234 }
+  nic0_yaw:         { min: -0.1745, max:  0.1745 }
+  nic1_translation: { min: -0.0215, max:  0.0234 }
+  nic1_yaw:         { min: -0.1745, max:  0.1745 }
+  sc0_translation:  { min: -0.06,   max:  0.055  }
+  sc0_yaw:          { min: -0.1745, max:  0.1745 }
+  sc1_translation:  { min: -0.06,   max:  0.055  }
+  sc1_yaw:          { min: -0.1745, max:  0.1745 }
+
+sampling:
+  # 파라미터 공간 샘플링 전략
+  #   uniform  — 기존 방식 (독립 uniform random, EXP-007 baseline)
+  #   lhs      — Latin Hypercube Sampling (권장, 각 차원 균등 층화)
+  #   sobol    — Sobol quasi-random sequence (장차원에 유리)
+  strategy: lhs
+
+tags:
+  # 각 trial 산출물에 tags.json을 자동 생성. 스키마는 Step 4에서 확정.
+  schema_version: "0.0.0"
+  auto:
+    success_from_scoring: true            # scoring.yaml의 tier_3 성공 여부 복사
+    cable_type_from_metadata: true        # metadata.json의 cable_type 복사
+
+engine:
+  # 엔진 기동 옵션
+  ground_truth: true                      # 수집엔 true, 평가엔 false
+  template: configs/community_random_config.yaml

@@ -1,0 +1,38 @@
+# EXP-009 E2E 수집 — trial 2만 집중 수집
+#
+# F3 (부분 수집) 검증용. e2e_default.yaml과 동일하나 trials가 [2]만 포함.
+
+schema_version: "0.1"
+
+collection:
+  runs: 5
+  trials: [2]                             # ← trial 2만
+  output_root: ~/aic_community_e2e
+  seed: 42
+
+policy:
+  default: cheatcode
+  act_model_path: ~/ws_aic/src/aic/outputs/train/act_aic_v1_backup/checkpoints/last/pretrained_model
+
+parameters:
+  nic0_translation: { min: -0.0215, max:  0.0234 }
+  nic0_yaw:         { min: -0.1745, max:  0.1745 }
+  nic1_translation: { min: -0.0215, max:  0.0234 }
+  nic1_yaw:         { min: -0.1745, max:  0.1745 }
+  sc0_translation:  { min: -0.06,   max:  0.055  }
+  sc0_yaw:          { min: -0.1745, max:  0.1745 }
+  sc1_translation:  { min: -0.06,   max:  0.055  }
+  sc1_yaw:          { min: -0.1745, max:  0.1745 }
+
+sampling:
+  strategy: lhs
+
+tags:
+  schema_version: "0.0.0"
+  auto:
+    success_from_scoring: true
+    cable_type_from_metadata: true
+
+engine:
+  ground_truth: true
+  template: configs/community_random_config.yaml
