@@ -223,6 +223,24 @@ def discover_policies() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _has_nvidia_gpu() -> bool:
+    """NVIDIA GPU 존재 여부 확인."""
+    try:
+        r = subprocess.run(["nvidia-smi"], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _aic_eval_create_hint() -> str:
+    """aic_eval 컨테이너 생성 안내 문구 반환."""
+    nvidia_flag = " --nvidia" if _has_nvidia_gpu() else ""
+    return (
+        f"docker pull ghcr.io/intrinsic-dev/aic/aic_eval:latest && "
+        f"distrobox create -r{nvidia_flag} -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval"
+    )
+
+
 def check_environment() -> list[dict]:
     """환경 점검 항목 리스트 반환."""
     checks = []
@@ -252,11 +270,7 @@ def check_environment() -> list[dict]:
                 ok = "aic_eval" in r.stdout
                 checks.append({"name": "Docker (aic_eval)", "ok": ok,
                                 "msg": "확인" if ok else "aic_eval 미발견",
-                                "fix": None if ok else (
-                                    "docker pull ghcr.io/intrinsic-dev/aic/aic_eval:latest && "
-                                    "distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval "
-                                    "(GPU 없으면 --nvidia 제거)"
-                                )})
+                                "fix": None if ok else _aic_eval_create_hint()})
     except Exception as e:
         checks.append({"name": "Docker", "ok": False, "msg": str(e)[:80], "fix": None})
 
