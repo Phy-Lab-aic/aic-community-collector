@@ -295,7 +295,7 @@ def check_environment() -> list[dict]:
             checks.append({"name": pip_name, "ok": True, "msg": "설치됨", "fix": None})
         except ImportError:
             checks.append({"name": pip_name, "ok": False, "msg": "미설치",
-                            "fix": f"uv pip install --system {pip_name}"})
+                            "fix": f"uv pip install {pip_name}"})
 
     # scipy
     try:
@@ -303,7 +303,7 @@ def check_environment() -> list[dict]:
         checks.append({"name": "scipy", "ok": True, "msg": "설치됨 (LHS 가능)", "fix": None})
     except ImportError:
         checks.append({"name": "scipy", "ok": False, "msg": "미설치 (LHS 사용 시 필요)",
-                        "fix": "uv pip install --system scipy"})
+                        "fix": "uv pip install scipy"})
 
     return checks
 
