@@ -7,10 +7,8 @@ dependencies = [
     "streamlit>=1.30",
     "pyyaml",
     "numpy",
+    "scipy",
 ]
-
-[project.optional-dependencies]
-lhs = ["scipy"]
 
 [project.scripts]
 aic-collector = "aic_collector.webapp:main"
