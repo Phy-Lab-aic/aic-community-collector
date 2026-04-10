@@ -254,7 +254,8 @@ def check_environment() -> list[dict]:
                                 "msg": "확인" if ok else "aic_eval 미발견",
                                 "fix": None if ok else (
                                     "docker pull ghcr.io/intrinsic-dev/aic/aic_eval:latest && "
-                                    "distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval"
+                                    "distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval "
+                                    "(GPU 없으면 --nvidia 제거)"
                                 )})
     except Exception as e:
         checks.append({"name": "Docker", "ok": False, "msg": str(e)[:80], "fix": None})
