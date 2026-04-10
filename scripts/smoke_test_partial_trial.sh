@@ -13,7 +13,7 @@ export DBX_CONTAINER_MANAGER=docker
 READY_FLAG="$HOME/aic_ready"
 DONE_FLAG="$HOME/aic_done"
 
-PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="$PROJECT_DIR/configs/community_random_config.yaml"
 TEST_CONFIG="/tmp/engine_config_trial2_only.yaml"
 RESULT_ARCHIVE="$HOME/aic_smoke_results"

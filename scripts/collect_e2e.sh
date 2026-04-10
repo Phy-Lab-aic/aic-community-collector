@@ -23,7 +23,7 @@ set -e
 export DBX_CONTAINER_MANAGER=docker
 export PATH="$HOME/.pixi/bin:$PATH"
 
-PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 READY_FLAG="$HOME/aic_ready"
 DONE_FLAG="$HOME/aic_done"
 ENGINE_RESULTS="$HOME/aic_results"

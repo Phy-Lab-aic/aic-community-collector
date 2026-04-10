@@ -2,7 +2,7 @@
 # Policy 파일을 우리 프로젝트 → AIC 설치 경로로 배포
 # 사용법: ./scripts/deploy_policies.sh
 
-PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 POLICY_SRC="$PROJECT_DIR/policies"
 POLICY_DST="$HOME/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/aic_example_policies/ros"
 
