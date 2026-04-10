@@ -19,23 +19,12 @@ uv run src/aic_collector/webapp.py
 
 ## 전제 조건
 
-챌린지 참가자라면 이미 갖춰져 있습니다:
+챌린지 참가자라면 이미 갖춰져 있습니다.
+설치가 안 되어 있다면 [AIC Getting Started 가이드](https://github.com/intrinsic-dev/aic/blob/main/docs/getting_started.md)를 참고하세요.
 
-- **Docker** — 현재 사용자가 docker 그룹에 속해야 합니다 (sudo 없이 실행)
-  ```bash
-  # docker 그룹 등록 (등록 후 재로그인 필요)
-  sudo usermod -aG docker $USER
-  ```
-- **`aic_eval` 컨테이너**
-  ```bash
-  docker pull ghcr.io/intrinsic-dev/aic/aic_eval:latest
-  # NVIDIA GPU가 있는 경우
-  distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval
-  # GPU가 없는 경우
-  distrobox create -r -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval
-  ```
-- **Distrobox**
-- **pixi** + `~/ws_aic/src/aic`
+- Docker + `aic_eval` 컨테이너 (현재 사용자가 docker 그룹에 속해야 합니다)
+- Distrobox
+- pixi + `~/ws_aic/src/aic`
 - [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
 ## 기능
