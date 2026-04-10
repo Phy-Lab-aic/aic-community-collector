@@ -2,6 +2,16 @@
 
 AI for Industry Challenge 커뮤니티 구성원이 **자신의 Policy로 평가 데이터를 수집**하는 도구.
 
+## 전제 조건
+
+챌린지 참가자라면 이미 갖춰져 있습니다.
+설치가 안 되어 있다면 [AIC Getting Started 가이드](https://github.com/intrinsic-dev/aic/blob/main/docs/getting_started.md)를 참고하세요.
+
+- Docker + `aic_eval` 컨테이너 (현재 사용자가 docker 그룹에 속해야 합니다)
+- Distrobox
+- pixi + `~/ws_aic/src/aic`
+- [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+
 ## Quick Start
 
 ```bash
@@ -28,16 +38,6 @@ uv run src/aic_collector/webapp.py
 CSV 다운로드도 가능합니다.
 
 ![수집 결과](docs/images/tab_results.png)
-
-## 전제 조건
-
-챌린지 참가자라면 이미 갖춰져 있습니다.
-설치가 안 되어 있다면 [AIC Getting Started 가이드](https://github.com/intrinsic-dev/aic/blob/main/docs/getting_started.md)를 참고하세요.
-
-- Docker + `aic_eval` 컨테이너 (현재 사용자가 docker 그룹에 속해야 합니다)
-- Distrobox
-- pixi + `~/ws_aic/src/aic`
-- [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
 ## 샘플링 전략
 
