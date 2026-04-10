@@ -60,7 +60,7 @@ run_once() {
     [ -d "$HOME/aic_results" ] && mv "$HOME/aic_results" "$HOME/aic_results_f5_backup_$(date +%s)" 2>/dev/null || true
 
     echo "[1/5] 컨테이너 재시작..."
-    sudo docker restart aic_eval
+    docker restart aic_eval
     sleep 5
 
     echo "[2/5] 엔진 시작 (trial_2 only, ground_truth=true)..."

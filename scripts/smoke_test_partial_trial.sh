@@ -36,7 +36,7 @@ rm -rf "$RESULT_ARCHIVE"
 
 # 3. 컨테이너 재시작
 echo "[2/7] 컨테이너 재시작..."
-sudo docker restart aic_eval
+docker restart aic_eval
 sleep 5
 
 # 4. 엔진 시작 (backgrounded)

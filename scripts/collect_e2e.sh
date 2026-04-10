@@ -269,7 +269,7 @@ with open('$params_json', 'w') as f:
 
     # 컨테이너 재시작
     echo "[engine] 컨테이너 재시작..."
-    sudo docker restart aic_eval
+    docker restart aic_eval
     sleep 5
 
     # 엔진 기동

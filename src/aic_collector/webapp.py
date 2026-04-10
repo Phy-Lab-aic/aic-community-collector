@@ -229,16 +229,32 @@ def check_environment() -> list[dict]:
 
     # Docker
     try:
-        r = subprocess.run(
-            ["sudo", "docker", "ps", "-a", "--filter", "name=aic_eval", "--format", "{{.Names}}"],
-            capture_output=True, text=True, timeout=10,
-        )
-        ok = "aic_eval" in r.stdout
-        checks.append({"name": "Docker (aic_eval)", "ok": ok,
-                        "msg": "확인" if ok else "aic_eval 미발견",
-                        "fix": None})
+        import shutil
+        docker_path = shutil.which("docker")
+        if not docker_path:
+            checks.append({"name": "Docker", "ok": False,
+                            "msg": "미설치 (docker 명령어 없음)",
+                            "fix": "sudo apt install docker.io 또는 공식 문서 참고"})
+        else:
+            r = subprocess.run(
+                ["docker", "ps", "-a", "--filter", "name=aic_eval", "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0 and "permission denied" in (r.stderr or "").lower():
+                checks.append({"name": "Docker", "ok": False,
+                                "msg": "권한 없음 (docker 그룹 미등록)",
+                                "fix": "sudo usermod -aG docker $USER 후 재로그인"})
+            elif r.returncode != 0:
+                checks.append({"name": "Docker", "ok": False,
+                                "msg": f"실행 오류: {(r.stderr or '').strip()[:80]}",
+                                "fix": None})
+            else:
+                ok = "aic_eval" in r.stdout
+                checks.append({"name": "Docker (aic_eval)", "ok": ok,
+                                "msg": "확인" if ok else "aic_eval 미발견",
+                                "fix": None})
     except Exception as e:
-        checks.append({"name": "Docker", "ok": False, "msg": str(e)[:50], "fix": None})
+        checks.append({"name": "Docker", "ok": False, "msg": str(e)[:80], "fix": None})
 
     # Distrobox
     try:
