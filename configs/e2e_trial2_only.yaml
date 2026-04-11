@@ -1,6 +1,6 @@
-# EXP-009 E2E 수집 — trial 2만 집중 수집
+# E2E 수집 — trial 2만 집중 수집
 #
-# F3 (부분 수집) 검증용. e2e_default.yaml과 동일하나 trials가 [2]만 포함.
+# 부분 수집 예시. e2e_default.yaml과 동일하나 trials가 [2]만 포함.
 
 schema_version: "0.1"
 

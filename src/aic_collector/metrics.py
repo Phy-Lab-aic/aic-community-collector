@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-EXP-009 Primary 지표 계산 유틸.
+Primary 지표 계산 유틸.
 
 지표:
   P1 — Episodes per hour (유효 성공): 성공 episode / 전체 wall-clock 시간(h)
@@ -12,7 +12,7 @@ EXP-009 Primary 지표 계산 유틸.
   - 축별 히스토그램 변동 계수 (CV)
 
 Usage:
-    # 기본 EXP-007 경로 스캔
+    # 기본 경로 스캔
     python metrics.py
 
     # 특정 데모/bag 경로 지정
@@ -282,7 +282,7 @@ def print_summary(
     total_hours: float,
     n_runs: int,
 ) -> None:
-    print(f"\n=== EXP-009 Metrics: {label} ===")
+    print(f"\n=== Metrics: {label} ===")
     print(f"demo episodes: {len(episodes)}")
     print(f"run configs:   {len(samples)}")
     print(f"total wall-clock (h): {total_hours:.3f} ({n_runs} runs)")
