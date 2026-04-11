@@ -49,6 +49,8 @@ PIXI_POLICIES_DIR = (
     / "ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/aic_example_policies/ros"
 )
 COLLECT_SCRIPT = PROJECT_DIR / "scripts/collect_e2e.sh"
+PREFECT_SCRIPT = ["uv", "run", "aic-prefect-run"]
+PROGRESS_FILE = Path("/tmp/e2e_prefect_progress.json")
 DEPLOY_SCRIPT = PROJECT_DIR / "scripts/deploy_policies.sh"
 DEFAULT_CONFIG = PROJECT_DIR / "configs/e2e_default.yaml"
 OUTPUT_ROOT = Path.home() / "aic_community_e2e"
@@ -68,18 +70,32 @@ BG_LOG_FILE = Path("/tmp/e2e_webapp_run.log")
 
 
 def bg_start(cmd: list[str], total_runs: int, config_summary: dict | None = None) -> None:
-    """수집을 백그라운드로 시작. 상태를 JSON 파일에 기록."""
+    """수집을 백그라운드로 시작. Prefect flow를 subprocess로 기동."""
     BG_LOG_FILE.write_text("")
+    PROGRESS_FILE.write_text(json.dumps({
+        "completed": 0, "total": total_runs, "status": "running",
+    }))
+
+    # cmd에서 --config, --runs, --seed 추출
+    prefect_cmd = list(PREFECT_SCRIPT)
+    for i, arg in enumerate(cmd):
+        if arg == "--config" and i + 1 < len(cmd):
+            prefect_cmd.extend(["--config", cmd[i + 1]])
+        elif arg == "--runs" and i + 1 < len(cmd):
+            prefect_cmd.extend(["--runs", cmd[i + 1]])
+        elif arg == "--seed" and i + 1 < len(cmd):
+            prefect_cmd.extend(["--seed", cmd[i + 1]])
+
     proc = subprocess.Popen(
-        cmd,
+        prefect_cmd,
         stdout=open(BG_LOG_FILE, "w"),
         stderr=subprocess.STDOUT,
         cwd=str(PROJECT_DIR),
-        start_new_session=True,  # 부모(streamlit)와 분리
+        start_new_session=True,
     )
     state = {
         "pid": proc.pid,
-        "cmd": cmd,
+        "cmd": prefect_cmd,
         "total_runs": total_runs,
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "config_summary": config_summary or {},
@@ -126,24 +142,41 @@ def bg_status() -> dict | None:
     except OSError:
         state["running"] = False
 
-    # 로그에서 진행 상황 파싱
+    # Prefect 진행 파일에서 구조화된 상태 읽기
     state["completed_runs"] = 0
     state["current_label"] = ""
-    state["log_lines"] = []
     state["finished_ok"] = False
+    if PROGRESS_FILE.exists():
+        try:
+            progress = json.loads(PROGRESS_FILE.read_text())
+            state["completed_runs"] = progress.get("completed", 0)
+            state["current_label"] = progress.get("current_label", "")
+            state["total_runs"] = progress.get("total", state.get("total_runs", 0))
+            pstatus = progress.get("status", "")
+            if pstatus == "completed":
+                state["finished_ok"] = True
+            elif pstatus == "failed":
+                state["failed"] = True
+        except Exception:
+            pass
+
+    # 로그에서 폴백 (Prefect 진행 파일이 없는 경우 대비)
+    state["log_lines"] = []
     if BG_LOG_FILE.exists():
         try:
             lines = BG_LOG_FILE.read_text().splitlines()
-            state["log_lines"] = lines[-100:]  # 최근 100줄
-            for line in lines:
-                if "run 재편 완료" in line or "[done]" in line:
-                    state["completed_runs"] += 1
-                if "E2E 수집 완료" in line:
-                    state["finished_ok"] = True
-                m = re.search(r"RUN (\d+)/(\d+)", line)
-                if m:
-                    state["current_label"] = f"RUN {m.group(1)}/{m.group(2)}"
-                    state["total_runs"] = int(m.group(2))
+            state["log_lines"] = lines[-100:]
+            # Prefect 진행 파일이 없으면 로그 스크래핑으로 폴백
+            if not PROGRESS_FILE.exists():
+                for line in lines:
+                    if "run 재편 완료" in line or "[done]" in line:
+                        state["completed_runs"] += 1
+                    if "E2E 수집 완료" in line:
+                        state["finished_ok"] = True
+                    m = re.search(r"RUN (\d+)/(\d+)", line)
+                    if m:
+                        state["current_label"] = f"RUN {m.group(1)}/{m.group(2)}"
+                        state["total_runs"] = int(m.group(2))
         except Exception:
             pass
 
@@ -157,6 +190,7 @@ def bg_status() -> dict | None:
 def bg_clear() -> None:
     """백그라운드 상태 파일 정리."""
     BG_STATE_FILE.unlink(missing_ok=True)
+    PROGRESS_FILE.unlink(missing_ok=True)
 
 
 HISTORY_FILE = Path("/tmp/e2e_webapp_history.json")

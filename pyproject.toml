@@ -8,10 +8,13 @@ dependencies = [
     "pyyaml",
     "numpy",
     "scipy",
+    "prefect>=3.0",
+    "fakeredis<2.27",
 ]
 
 [project.scripts]
 aic-collector = "aic_collector.webapp:main"
+aic-prefect-run = "aic_collector.prefect.serve:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aic_collector"]
