@@ -63,7 +63,24 @@ BG_LOG_FILE = Path("/tmp/e2e_webapp_run.log")
 
 # Prefect 서버
 PREFECT_SERVER_URL = "http://127.0.0.1:4200"
+PREFECT_PORT = 4200
 PREFECT_PID_FILE = Path("/tmp/e2e_prefect_server.pid")
+
+
+def get_prefect_ui_url() -> str:
+    """브라우저에서 접근 가능한 Prefect UI URL을 반환.
+
+    Streamlit의 Host 헤더에서 호스트명을 추출해 :4200 으로 연결.
+    원격 접속(예: 192.168.x.y:8501)에서도 같은 호스트의 4200 포트로 연결 가능.
+    """
+    try:
+        host_header = st.context.headers.get("Host", "")
+        if host_header:
+            host = host_header.rsplit(":", 1)[0] if ":" in host_header else host_header
+            return f"http://{host}:{PREFECT_PORT}"
+    except Exception:
+        pass
+    return PREFECT_SERVER_URL
 
 
 # ---------------------------------------------------------------------------
@@ -920,7 +937,18 @@ with tab_collect:
             else:
                 st.caption("로그 대기 중...")
 
-        if st.button("⏹️ 수집 중단", key="btn_stop", type="secondary"):
+        # Prefect UI 링크 + 중단 버튼
+        col_stop, col_prefect = st.columns([1, 2])
+        with col_stop:
+            stop_clicked = st.button("⏹️ 수집 중단", key="btn_stop", type="secondary")
+        with col_prefect:
+            st.link_button(
+                "🔍 Prefect 대시보드에서 상세 보기",
+                get_prefect_ui_url(),
+                help="각 task의 로그, 소요 시간, 상태를 자세히 확인",
+            )
+
+        if stop_clicked:
             if bg_stop():
                 st.warning("수집이 중단되었습니다.")
                 bg_clear()
@@ -964,9 +992,17 @@ with tab_collect:
                 if log_lines:
                     st.code("\n".join(log_lines[-100:]), language="bash")
 
-        if st.button("확인", key="btn_clear_bg"):
-            bg_clear()
-            st.rerun()
+        col_ok, col_prefect = st.columns([1, 2])
+        with col_ok:
+            if st.button("확인", key="btn_clear_bg"):
+                bg_clear()
+                st.rerun()
+        with col_prefect:
+            st.link_button(
+                "🔍 Prefect 대시보드",
+                get_prefect_ui_url(),
+                help="이번 수집의 task별 로그와 이력을 확인",
+            )
 
     else:
         # ── 대기 중 → 수집 시작 가능 ──
@@ -1016,8 +1052,16 @@ with tab_results:
     st.subheader("수집 결과")
     st.caption(f"📁 저장 경로: `{OUTPUT_ROOT}`")
 
-    if st.button("새로고침", key="refresh_results"):
-        pass  # rerun 트리거
+    col_refresh, col_prefect = st.columns([1, 2])
+    with col_refresh:
+        if st.button("새로고침", key="refresh_results"):
+            pass  # rerun 트리거
+    with col_prefect:
+        st.link_button(
+            "🔍 Prefect 대시보드",
+            get_prefect_ui_url(),
+            help="과거 수집 실행 이력과 task별 상세 로그 확인",
+        )
 
     rows = load_results()
     if rows:
