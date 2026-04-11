@@ -72,17 +72,17 @@ CSV 다운로드도 가능합니다.
 
 ## CLI 사용
 
-Web UI 없이 CLI로도 수집 가능합니다.
+Web UI 없이 CLI로도 수집 가능합니다. Prefect flow로 직접 실행:
 
 ```bash
 # dry-run (설정 확인만, 실제 수집 안 함)
-./scripts/collect_e2e.sh --config configs/e2e_default.yaml --dry-run
+uv run aic-prefect-run --config configs/e2e_default.yaml --dry-run
 
 # 수집 실행 (3회 반복)
-./scripts/collect_e2e.sh --config configs/e2e_default.yaml --runs 3
+uv run aic-prefect-run --config configs/e2e_default.yaml --runs 3
 
 # 빠른 테스트 (1회, trial 1개)
-./scripts/collect_e2e.sh --config configs/e2e_test.yaml
+uv run aic-prefect-run --config configs/e2e_test.yaml
 ```
 
 ## 결과 구조

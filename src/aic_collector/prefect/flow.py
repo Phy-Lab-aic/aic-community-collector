@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from datetime import datetime
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import yaml
 from prefect import flow, task
+from prefect.artifacts import create_markdown_artifact
 
 from aic_collector.build_engine_config import build as build_engine_cfg
 from aic_collector.postprocess_run import process_run
@@ -248,6 +250,52 @@ def cleanup_task(
         kill_process_tree(engine_handle["pid"], grace_sec=3)
 
 
+def _build_run_summary_markdown(
+    run_dir: str, policy: str, seed: int, params: dict[str, float], success: bool
+) -> str:
+    """run 결과를 Prefect 아티팩트용 markdown으로 변환."""
+    run_name = Path(run_dir).name
+    status = "✅ 성공" if success else "❌ 실패"
+
+    # trial별 점수 스캔
+    trial_rows = []
+    if success:
+        for trial_dir in sorted(Path(run_dir).glob("trial_*_score*")):
+            m = re.match(r"trial_(\d+)_score(\d+)", trial_dir.name)
+            if m:
+                trial_num = m.group(1)
+                score = m.group(2)
+                trial_rows.append(f"| trial_{trial_num} | {score} |")
+
+    params_rows = "\n".join(
+        f"| `{k}` | {v:.4f} |" for k, v in sorted(params.items())
+    )
+
+    md = f"""# Run {run_name}
+
+**상태**: {status}
+**Policy**: `{policy}`
+**Seed**: {seed}
+
+## Trials
+
+| Trial | Score |
+|-------|-------|
+{chr(10).join(trial_rows) if trial_rows else "| - | - |"}
+
+## Parameters
+
+| Name | Value |
+|------|-------|
+{params_rows}
+
+## Output
+
+`{run_dir}`
+"""
+    return md
+
+
 @task(name="postprocess", retries=2, retry_delay_seconds=5)
 def postprocess_task(
     run_dir: str,
@@ -257,9 +305,17 @@ def postprocess_task(
     seed: int,
     params: dict[str, float],
 ) -> dict:
-    """run 산출물 재편."""
+    """run 산출물 재편 + Prefect artifact 기록."""
     if not ENGINE_RESULTS.exists():
         print(f"[error] {ENGINE_RESULTS} 없음 — 엔진/policy 실행 실패")
+        try:
+            create_markdown_artifact(
+                key=f"run-{Path(run_dir).name.replace('_', '-')}",
+                markdown=_build_run_summary_markdown(run_dir, policy, seed, params, False),
+                description="수집 실패: 엔진 결과 없음",
+            )
+        except Exception:
+            pass
         return {"success": False, "run_dir": run_dir}
 
     print(f"[postprocess] {run_dir} 로 재편...")
@@ -278,12 +334,22 @@ def postprocess_task(
 
     params_json_path.unlink(missing_ok=True)
 
-    if rc == 0:
+    success = rc == 0
+    if success:
         _append_log(f"[done] run 재편 완료: {run_dir}")
-        return {"success": True, "run_dir": run_dir}
     else:
         print("[warn] postprocess 실패")
-        return {"success": False, "run_dir": run_dir}
+
+    try:
+        create_markdown_artifact(
+            key=f"run-{Path(run_dir).name.replace('_', '-')}",
+            markdown=_build_run_summary_markdown(run_dir, policy, seed, params, success),
+            description=f"Run {Path(run_dir).name} 결과 요약",
+        )
+    except Exception:
+        pass
+
+    return {"success": success, "run_dir": run_dir}
 
 
 # ---------------------------------------------------------------------------

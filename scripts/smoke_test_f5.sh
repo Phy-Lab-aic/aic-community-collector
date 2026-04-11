@@ -11,7 +11,7 @@
 # 예상 소요: ~5-6분 (엔진 기동 × 2 + 각 trial ~32초 off / ~27초 on)
 #
 # 자동 실행 전:
-#   ./scripts/deploy_policies.sh  (정책 파일을 pixi 경로로 배포)
+#   uv run python -c "from aic_collector.prefect.policy_env import deploy_policies; deploy_policies('.')"
 #
 # 사용법:
 #   ./scripts/smoke_test_f5.sh
@@ -29,7 +29,7 @@ TEST_CONFIG="/tmp/engine_config_f5_test.yaml"
 
 # 정책 파일 자동 배포 (편집 내용 반영 보장)
 echo "[prep] 정책 배포 (policies/ → pixi env)..."
-"$PROJECT_DIR/scripts/deploy_policies.sh"
+uv run python -c "from aic_collector.prefect.policy_env import deploy_policies; deploy_policies('$PROJECT_DIR')"
 
 # 이전 F5 테스트 결과 정리
 rm -rf "$HOME/aic_f5_test_off" "$HOME/aic_f5_test_on"

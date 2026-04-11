@@ -5,7 +5,7 @@
 AIC Community Data Collector — Web UI
 
 커뮤니티 구성원이 브라우저에서 데이터를 수집하는 관리 도구.
-collect_e2e.sh 위에 Streamlit UI를 얹은 구조.
+Prefect flow(aic_collector.prefect) 위에 Streamlit UI를 얹은 구조.
 
 실행: uv run src/aic_collector/webapp.py
       또는 pyproject.toml이 있으면: uv run aic-collector
@@ -48,10 +48,8 @@ PIXI_POLICIES_DIR = (
     Path.home()
     / "ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/aic_example_policies/ros"
 )
-COLLECT_SCRIPT = PROJECT_DIR / "scripts/collect_e2e.sh"
 PREFECT_SCRIPT = ["uv", "run", "aic-prefect-run"]
 PROGRESS_FILE = Path("/tmp/e2e_prefect_progress.json")
-DEPLOY_SCRIPT = PROJECT_DIR / "scripts/deploy_policies.sh"
 DEFAULT_CONFIG = PROJECT_DIR / "configs/e2e_default.yaml"
 OUTPUT_ROOT = Path.home() / "aic_community_e2e"
 
@@ -63,28 +61,136 @@ HIDDEN_POLICIES = {
 BG_STATE_FILE = Path("/tmp/e2e_webapp_state.json")
 BG_LOG_FILE = Path("/tmp/e2e_webapp_run.log")
 
+# Prefect 서버
+PREFECT_SERVER_URL = "http://127.0.0.1:4200"
+PREFECT_PID_FILE = Path("/tmp/e2e_prefect_server.pid")
+
+
+# ---------------------------------------------------------------------------
+# 임시 파일 정리
+# ---------------------------------------------------------------------------
+
+
+def cleanup_tmp_artifacts(max_age_days: int = 7) -> int:
+    """`/tmp/e2e_*` 및 오래된 백업 디렉토리 정리. 정리된 개수 반환."""
+    cutoff = time.time() - max_age_days * 86400
+    count = 0
+
+    # /tmp/e2e_* 파일/디렉토리 (현재 실행 중인 것은 제외)
+    keep = {BG_STATE_FILE, BG_LOG_FILE, PROGRESS_FILE, PREFECT_PID_FILE}
+    for p in Path("/tmp").glob("e2e_*"):
+        if p in keep:
+            continue
+        try:
+            if p.stat().st_mtime < cutoff:
+                if p.is_dir():
+                    import shutil
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+                count += 1
+        except OSError:
+            pass
+
+    # ~/aic_results_e2e_backup_* 오래된 것들
+    home = Path.home()
+    for p in home.glob("aic_results_e2e_backup_*"):
+        try:
+            if p.stat().st_mtime < cutoff and p.is_dir():
+                import shutil
+                shutil.rmtree(p, ignore_errors=True)
+                count += 1
+        except OSError:
+            pass
+
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Prefect 서버 자동 기동
+# ---------------------------------------------------------------------------
+
+
+def _prefect_server_alive() -> bool:
+    """Prefect 서버가 떠 있는지 확인."""
+    try:
+        import urllib.request
+        urllib.request.urlopen(f"{PREFECT_SERVER_URL}/api/health", timeout=1)
+        return True
+    except Exception:
+        return False
+
+
+def ensure_prefect_server() -> tuple[bool, str]:
+    """Prefect 서버가 안 떠있으면 백그라운드로 기동. (started_now, status)."""
+    if _prefect_server_alive():
+        return False, "already_running"
+
+    # PID 파일에 기록된 이전 프로세스 검사
+    if PREFECT_PID_FILE.exists():
+        try:
+            pid = int(PREFECT_PID_FILE.read_text().strip())
+            os.kill(pid, 0)  # 살아있나 확인
+            # 살아있지만 health 체크 실패 → 초기화 중일 수 있음
+            return False, "starting"
+        except (OSError, ValueError):
+            PREFECT_PID_FILE.unlink(missing_ok=True)
+
+    # 새로 기동
+    log_path = Path("/tmp/e2e_prefect_server.log")
+    proc = subprocess.Popen(
+        ["uv", "run", "prefect", "server", "start",
+         "--host", "0.0.0.0", "--port", "4200"],
+        stdout=open(log_path, "w"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env={**os.environ, "PREFECT_UI_API_URL": f"{PREFECT_SERVER_URL}/api"},
+    )
+    PREFECT_PID_FILE.write_text(str(proc.pid))
+
+    # 최대 15초 대기
+    for _ in range(30):
+        time.sleep(0.5)
+        if _prefect_server_alive():
+            return True, "started"
+
+    return True, "timeout"
+
 
 # ---------------------------------------------------------------------------
 # 백그라운드 수집 프로세스 관리
 # ---------------------------------------------------------------------------
 
 
-def bg_start(cmd: list[str], total_runs: int, config_summary: dict | None = None) -> None:
-    """수집을 백그라운드로 시작. Prefect flow를 subprocess로 기동."""
+def bg_start(
+    config_path: str,
+    runs: int,
+    seed: int,
+    config_summary: dict | None = None,
+) -> None:
+    """수집을 백그라운드로 시작. Prefect flow를 subprocess로 기동.
+
+    이미 실행 중인 수집이 있으면 RuntimeError를 발생시킨다.
+    """
+    # 동시 실행 방지: 기존 상태가 running이면 거부
+    existing = bg_status()
+    if existing and existing.get("running"):
+        raise RuntimeError("이미 수집이 진행 중입니다. 중지 후 다시 시작하세요.")
+
+    # 오래된 임시 파일 정리
+    cleanup_tmp_artifacts()
+
     BG_LOG_FILE.write_text("")
     PROGRESS_FILE.write_text(json.dumps({
-        "completed": 0, "total": total_runs, "status": "running",
+        "completed": 0, "total": runs, "status": "running",
     }))
 
-    # cmd에서 --config, --runs, --seed 추출
-    prefect_cmd = list(PREFECT_SCRIPT)
-    for i, arg in enumerate(cmd):
-        if arg == "--config" and i + 1 < len(cmd):
-            prefect_cmd.extend(["--config", cmd[i + 1]])
-        elif arg == "--runs" and i + 1 < len(cmd):
-            prefect_cmd.extend(["--runs", cmd[i + 1]])
-        elif arg == "--seed" and i + 1 < len(cmd):
-            prefect_cmd.extend(["--seed", cmd[i + 1]])
+    prefect_cmd = [
+        *PREFECT_SCRIPT,
+        "--config", str(config_path),
+        "--runs", str(runs),
+        "--seed", str(seed),
+    ]
 
     proc = subprocess.Popen(
         prefect_cmd,
@@ -96,7 +202,7 @@ def bg_start(cmd: list[str], total_runs: int, config_summary: dict | None = None
     state = {
         "pid": proc.pid,
         "cmd": prefect_cmd,
-        "total_runs": total_runs,
+        "total_runs": runs,
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "config_summary": config_summary or {},
     }
@@ -808,13 +914,6 @@ with tab_collect:
                 with open(config_path, "w") as f:
                     yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
 
-                cmd = [
-                    str(COLLECT_SCRIPT),
-                    "--config", str(config_path),
-                    "--runs", str(runs),
-                    "--seed", str(seed),
-                ]
-
                 config_summary = {
                     "policy": policy_default,
                     "runs": runs,
@@ -824,7 +923,21 @@ with tab_collect:
                     "per_trial": trial_policies or None,
                     "ground_truth": ground_truth,
                 }
-                bg_start(cmd, total_runs=runs, config_summary=config_summary)
+
+                # Prefect 서버 자동 기동 (선택 기능)
+                with st.spinner("Prefect 서버 확인 중..."):
+                    ensure_prefect_server()
+
+                try:
+                    bg_start(
+                        config_path=str(config_path),
+                        runs=runs,
+                        seed=seed,
+                        config_summary=config_summary,
+                    )
+                except RuntimeError as e:
+                    st.error(str(e))
+                    st.stop()
 
                 # 실행 이력 저장
                 _save_run_history(config_summary)
