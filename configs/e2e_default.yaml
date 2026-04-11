@@ -1,4 +1,4 @@
-# EXP-009 E2E 수집 기본 config
+# E2E 수집 기본 config
 #
 # `aic-prefect-run` 또는 webapp이 이 파일을 읽고 Prefect flow로 파이프라인을 실행한다.
 # 자주 바꾸는 소수 값(runs, seed 등)은 CLI 오버라이드 가능.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-EXP-009 단일 run의 산출물 재편 유틸.
+단일 run의 산출물 재편 유틸.
 
 입력:
   - 엔진 산출물 (~/aic_results/) — scoring.yaml + bag_trial_N_*/

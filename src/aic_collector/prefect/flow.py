@@ -718,7 +718,7 @@ def collect_e2e_flow(
     seed = seed_override or collection.get("seed", 42)
     strategy = sampling.get("strategy", "uniform")
 
-    print("=== EXP-009 E2E 수집 ===")
+    print("=== AIC E2E 수집 ===")
     print(f"config: {config_path}")
     print(f"  runs: {runs}, seed: {seed}, strategy: {strategy}")
 
