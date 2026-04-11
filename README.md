@@ -2,6 +2,8 @@
 
 AI for Industry Challenge 커뮤니티 구성원이 **자신의 Policy로 평가 데이터를 수집**하는 도구.
 
+> 💡 단계별 사용법, 문제 해결, 고급 기능은 [사용 가이드](docs/usage-guide.md)를 참고하세요.
+
 ## 전제 조건
 
 챌린지 참가자라면 이미 갖춰져 있습니다.
@@ -27,6 +29,8 @@ uv run src/aic_collector/webapp.py
 ## 환경 설정
 
 브라우저에서 `http://localhost:8501` 접속 후, **환경 점검** 탭에서 모든 항목이 통과하는지 확인하세요.
+
+> 자세한 단계별 안내는 [사용 가이드 → 환경 점검](docs/usage-guide.md#환경-점검) 참고.
 
 ![환경 점검](docs/images/tab_check.png)
 
@@ -99,6 +103,11 @@ uv run aic-prefect-run --config configs/e2e_test.yaml
     ├── trial_2_score95/
     └── trial_3_score25/
 ```
+
+## 더 알아보기
+
+- [사용 가이드](docs/usage-guide.md) — 단계별 사용법, Prefect 대시보드, 문제 해결
+- [Config Reference](docs/config-reference.md) — 모든 config 항목 설명
 
 ## License
 
