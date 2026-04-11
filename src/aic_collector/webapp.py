@@ -680,8 +680,14 @@ with tab_collect:
     with col_seed:
         seed = st.number_input("Seed", min_value=0, value=_default_seed)
     with col_sampling:
-        _si = ["lhs", "uniform", "sobol"].index(_default_sampling) if _default_sampling in ["lhs", "uniform", "sobol"] else 0
-        sampling = st.selectbox("Sampling", ["lhs", "uniform", "sobol"], index=_si)
+        _sampling_opts = ["lhs", "uniform", "sobol", "static"]
+        _si = _sampling_opts.index(_default_sampling) if _default_sampling in _sampling_opts else 0
+        sampling = st.selectbox(
+            "Sampling",
+            _sampling_opts,
+            index=_si,
+            help="static: AIC 공식 고정값 (랜덤 없음, 모든 run 동일 조건)",
+        )
 
     # 고급 옵션 (ACT 모델 경로, ground_truth)
     with st.expander("🔧 고급 옵션", expanded=False):

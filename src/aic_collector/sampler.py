@@ -43,6 +43,23 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# AIC 기본값 — sample_config.yaml에서 추출한 trial별 공식 고정값
+# ~/ws_aic/src/aic/aic_engine/config/sample_config.yaml 참고
+# ---------------------------------------------------------------------------
+
+AIC_DEFAULT_PARAMS: dict[str, float] = {
+    "nic0_translation": 0.036,    # trial_1 nic_rail_0
+    "nic0_yaw": 0.0,
+    "nic1_translation": 0.036,    # trial_2 nic_rail_1
+    "nic1_yaw": 0.0,
+    "sc0_translation": 0.042,     # sc_rail_0 (trial 1/2 배경)
+    "sc0_yaw": 0.1,
+    "sc1_translation": -0.055,    # trial_3 sc_rail_1
+    "sc1_yaw": 0.0,
+}
+
+
+# ---------------------------------------------------------------------------
 # 샘플링 전략
 # ---------------------------------------------------------------------------
 
@@ -156,17 +173,29 @@ def sample_parameters(
 
     Args:
         params_cfg: e2e_default.yaml의 `parameters` 섹션
-        strategy: "uniform" | "lhs" | "sobol"
+        strategy: "static" | "uniform" | "lhs" | "sobol"
         runs: 생성할 샘플 수
         seed: 재현용 seed
 
     Returns:
         List of dicts, 각 dict는 {파라미터 이름: 값}
     """
+    # static 전략: AIC 공식 고정값을 runs번 복제 (bounds 무시)
+    if strategy == "static":
+        keys = list(params_cfg.keys())
+        sample = {}
+        for k in keys:
+            if k in AIC_DEFAULT_PARAMS:
+                sample[k] = round(AIC_DEFAULT_PARAMS[k], 4)
+            else:
+                # AIC 기본값에 없는 커스텀 파라미터는 0으로
+                sample[k] = 0.0
+        return [dict(sample) for _ in range(runs)]
+
     if strategy not in STRATEGIES:
         raise ValueError(
             f"알 수 없는 샘플링 전략: {strategy}. "
-            f"사용 가능: {list(STRATEGIES.keys())}"
+            f"사용 가능: static, {list(STRATEGIES.keys())}"
         )
     keys, bounds = build_bounds(params_cfg)
     arr = STRATEGIES[strategy](bounds, runs, seed)
