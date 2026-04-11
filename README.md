@@ -44,6 +44,7 @@ uv run src/aic_collector/webapp.py
 - **LHS** (기본 권장) — 각 차원을 N등분하여 구간마다 한 점씩 샘플링. 적은 횟수로도 고르게 커버
 - **Uniform** — 독립 균등 난수. 단순 랜덤이 필요할 때
 - **Sobol** — 준난수 수열. `runs`를 2의 거듭제곱(8, 16, 32...)으로 설정할 때 효과적
+- **Static** — AIC 공식 고정값 사용. 랜덤 없이 모든 run이 동일 조건 (baseline, 디버깅)
 
 ### 내 Policy 사용하기
 

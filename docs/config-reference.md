@@ -101,6 +101,22 @@ policy:
 | `lhs` | Latin Hypercube Sampling | 적은 횟수로 공간을 고르게 커버 | scipy 필요 |
 | `uniform` | 독립 균등 난수 | 단순, 의존성 없음 | 고차원에서 빈 공간 발생 가능 |
 | `sobol` | 준난수(quasi-random) 수열 | 고차원 균등 분포 | `runs`를 2^k(8, 16, 32...)로 설정해야 효과적. scipy 필요 |
+| `static` | AIC 공식 고정값 (랜덤 없음) | 모든 run 동일 조건 (baseline, 디버깅) | `parameters`의 min/max 무시. seed 영향 없음 |
+
+**static 전략의 고정값** (AIC `sample_config.yaml` 기준):
+
+| 파라미터 | 값 | 출처 |
+|----------|-----|------|
+| `nic0_translation` | 0.036 | trial_1 `nic_rail_0` |
+| `nic0_yaw` | 0.0 | |
+| `nic1_translation` | 0.036 | trial_2 `nic_rail_1` |
+| `nic1_yaw` | 0.0 | |
+| `sc0_translation` | 0.042 | trial_1/2 배경 `sc_rail_0` |
+| `sc0_yaw` | 0.1 | |
+| `sc1_translation` | -0.055 | trial_3 `sc_rail_1` |
+| `sc1_yaw` | 0.0 | |
+
+**사용 예:** 같은 씬에서 여러 번 수집하여 Policy 일관성 측정, 또는 랜덤 변수 없는 baseline 비교 실험. `parameters` 섹션은 무시되므로 범위 설정이 필요 없습니다.
 
 ---
 
