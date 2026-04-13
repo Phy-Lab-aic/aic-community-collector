@@ -16,6 +16,7 @@ collection:
   trials: [1, 2, 3]                       # 수집할 trial 번호 (부분 수집 시 [2] 등)
   output_root: ~/aic_community_e2e        # run 저장 루트
   seed: 42                                # 재현용 seed
+  collect_episode: false                  # true: episode 데이터 수집 (이미지+npy), false: bag+scoring만
 
 policy:
   # 단일 정책 (F2-a) — 모든 trial에 동일 적용

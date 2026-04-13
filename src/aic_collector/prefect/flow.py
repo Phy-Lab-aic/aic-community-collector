@@ -298,6 +298,7 @@ def run_policy_task(
     run_tag: str,
     run_idx: int,
     policy_timeout: int = 300,
+    collect_episode: bool = False,
 ) -> bool:
     """Policy 실행, on_shutdown 대기. 성공 여부 반환."""
     with _task_timer("run-policy"):
@@ -307,6 +308,7 @@ def run_policy_task(
         env.update(policy_env)
         env["AIC_DEMO_DIR"] = demo_dir
         env["AIC_F5_ENABLED"] = os.environ.get("AIC_F5_ENABLED", "1")
+        env["AIC_COLLECT_EPISODE"] = "1" if collect_episode else "0"
 
         policy_class = policy_env.get("POLICY_CLASS", POLICY_CLASS)
         print(f"[policy] {policy_class} 실행...")
@@ -416,7 +418,7 @@ def _build_run_summary_markdown(
 # 검증 태스크
 # ---------------------------------------------------------------------------
 
-def _validate_run_dir(run_dir: Path) -> dict:
+def _validate_run_dir(run_dir: Path, collect_episode: bool = False) -> dict:
     """run 산출물 구조/크기 검증. {checks, warnings, passed_count, total_count} 반환."""
     checks = []
     warnings_list = []
@@ -460,37 +462,38 @@ def _validate_run_dir(run_dir: Path) -> dict:
             if bag_size < 1024:  # 1KB 미만은 비정상
                 warnings_list.append(f"{prefix}: bag 파일 크기 비정상 ({bag_size} bytes)")
 
-        # episode 존재
-        episode_dir = td / "episode"
-        _check(f"{prefix}/episode/", episode_dir.exists(), f"{prefix}: episode 없음")
+        # episode 존재 (collect_episode 활성 시만 검증)
+        if collect_episode:
+            episode_dir = td / "episode"
+            _check(f"{prefix}/episode/", episode_dir.exists(), f"{prefix}: episode 없음")
 
-        if episode_dir.exists():
-            # 필수 npy 파일
-            for npy in ["states.npy", "actions.npy", "wrenches.npy"]:
-                _check(
-                    f"{prefix}/episode/{npy}",
-                    (episode_dir / npy).exists(),
-                    f"{prefix}: {npy} 없음",
-                )
-
-            # 이미지 디렉토리
-            images_dir = episode_dir / "images"
-            if images_dir.exists():
-                for cam in ["left", "center", "right"]:
-                    cam_dir = images_dir / cam
-                    n_images = len(list(cam_dir.glob("*.png"))) if cam_dir.exists() else 0
+            if episode_dir.exists():
+                # 필수 npy 파일
+                for npy in ["states.npy", "actions.npy", "wrenches.npy"]:
                     _check(
-                        f"{prefix}/images/{cam}/ ≥ 1 PNG",
-                        n_images > 0,
-                        f"{prefix}/{cam}: 이미지 없음",
+                        f"{prefix}/episode/{npy}",
+                        (episode_dir / npy).exists(),
+                        f"{prefix}: {npy} 없음",
                     )
 
-            # metadata.json
-            _check(
-                f"{prefix}/episode/metadata.json",
-                (episode_dir / "metadata.json").exists(),
-                f"{prefix}: metadata.json 없음",
-            )
+                # 이미지 디렉토리
+                images_dir = episode_dir / "images"
+                if images_dir.exists():
+                    for cam in ["left", "center", "right"]:
+                        cam_dir = images_dir / cam
+                        n_images = len(list(cam_dir.glob("*.png"))) if cam_dir.exists() else 0
+                        _check(
+                            f"{prefix}/images/{cam}/ ≥ 1 PNG",
+                            n_images > 0,
+                            f"{prefix}/{cam}: 이미지 없음",
+                        )
+
+                # metadata.json
+                _check(
+                    f"{prefix}/episode/metadata.json",
+                    (episode_dir / "metadata.json").exists(),
+                    f"{prefix}: metadata.json 없음",
+                )
 
         # scoring/tags
         _check(f"{prefix}/scoring.yaml", (td / "scoring.yaml").exists(), f"{prefix}: scoring.yaml 없음")
@@ -506,10 +509,10 @@ def _validate_run_dir(run_dir: Path) -> dict:
 
 
 @task(name="validate-run")
-def validate_run_task(run_dir: str) -> dict:
+def validate_run_task(run_dir: str, collect_episode: bool = False) -> dict:
     """run 산출물의 구조/크기/완결성 검증. 결과를 run_dir/validation.json에도 저장."""
     with _task_timer("validate-run"):
-        result = _validate_run_dir(Path(run_dir))
+        result = _validate_run_dir(Path(run_dir), collect_episode=collect_episode)
         passed = result["passed_count"]
         total = result["total_count"]
         if passed == total:
@@ -617,6 +620,7 @@ def run_one(
     policy_default = policy_cfg.get("default", "cheatcode")
     ground_truth = engine_cfg.get("ground_truth", True)
     use_compressed = engine_cfg.get("use_compressed", False)
+    collect_episode = collection.get("collect_episode", False)
     template = engine_cfg.get("template", "configs/community_random_config.yaml")
     seed = collection.get("seed", 42)
 
@@ -662,7 +666,7 @@ def run_one(
             act_model_path = os.path.expanduser(act_model_path)
         policy_env = build_policy_env(policy_default, per_trial, act_model_path)
 
-        run_policy_task(policy_env, demo_dir, run_tag, run_idx)
+        run_policy_task(policy_env, demo_dir, run_tag, run_idx, collect_episode=collect_episode)
 
     finally:
         # 6. 정리
@@ -674,7 +678,7 @@ def run_one(
     # 8. 검증
     validation = None
     if result.get("success"):
-        validation = validate_run_task(run_dir)
+        validation = validate_run_task(run_dir, collect_episode=collect_episode)
         result["validation"] = validation
 
     # 9. Artifact 기록 (검증 결과 포함)

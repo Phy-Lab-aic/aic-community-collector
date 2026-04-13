@@ -549,6 +549,7 @@ def build_config(
     act_model_path: str | None = None,
     ground_truth: bool = True,
     use_compressed: bool = False,
+    collect_episode: bool = False,
 ) -> dict[str, Any]:
     defaults = load_default_config()
     _default_act = (defaults.get("policy") or {}).get(
@@ -562,6 +563,7 @@ def build_config(
             "trials": trials,
             "output_root": str(OUTPUT_ROOT),
             "seed": seed,
+            "collect_episode": collect_episode,
         },
         "policy": {
             "default": policy_default,
@@ -719,6 +721,8 @@ with tab_collect:
                                   help="켜면 시뮬레이터의 정확한 TF 정보를 사용 (수집용). 끄면 평가 모드 (CheatCode 사용 불가).")
         use_compressed = st.toggle("이미지 압축 (JPEG)", value=False,
                                     help="켜면 카메라 이미지를 JPEG 압축해서 기록 (~3GB/run). 끄면 raw 이미지 (~58GB/run).")
+        collect_episode = st.toggle("Episode 데이터 수집", value=False,
+                                     help="켜면 이미지+npy 데이터를 episode 디렉토리에 저장. 끄면 bag+scoring만 저장.")
         act_model_path = st.text_input("ACT 모델 경로", value=_default_act_path,
                                        help="hybrid/act policy 사용 시 학습된 모델 경로")
 
@@ -832,7 +836,7 @@ with tab_collect:
 
     # ── 미리보기 ──
     with st.expander("📋 파라미터 미리보기", expanded=False):
-        cfg = build_config(policy_default, trial_policies or None, runs, seed, trials, sampling, custom_params, act_model_path, ground_truth, use_compressed)
+        cfg = build_config(policy_default, trial_policies or None, runs, seed, trials, sampling, custom_params, act_model_path, ground_truth, use_compressed, collect_episode)
         try:
             sys.path.insert(0, str(PROJECT_DIR / "src/aic_collector"))
             from sampler import sample_parameters
@@ -865,7 +869,7 @@ with tab_collect:
                 if not clean_name.startswith("e2e_"):
                     clean_name = f"e2e_{clean_name}"
                 save_path = CONFIGS_DIR / f"{clean_name}.yaml"
-                cfg = build_config(policy_default, trial_policies or None, runs, seed, trials, sampling, custom_params, act_model_path, ground_truth, use_compressed)
+                cfg = build_config(policy_default, trial_policies or None, runs, seed, trials, sampling, custom_params, act_model_path, ground_truth, use_compressed, collect_episode)
                 CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
                 with open(save_path, "w") as f:
                     yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
@@ -1010,7 +1014,7 @@ with tab_collect:
             if not trials:
                 st.error("최소 1개 trial을 선택하세요.")
             else:
-                cfg = build_config(policy_default, trial_policies or None, runs, seed, trials, sampling, custom_params, act_model_path, ground_truth, use_compressed)
+                cfg = build_config(policy_default, trial_policies or None, runs, seed, trials, sampling, custom_params, act_model_path, ground_truth, use_compressed, collect_episode)
 
                 # config를 고정 경로에 저장 (백그라운드에서 참조)
                 config_path = Path("/tmp/e2e_webapp_config.yaml")
