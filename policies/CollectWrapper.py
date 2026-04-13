@@ -70,6 +70,10 @@ class CollectWrapper(Policy):
         self._inner = inner_class(parent_node)
         self.get_logger().info(f"[CollectWrapper] Inner policy: {inner_policy_path}")
 
+        # episode 수집 여부 (AIC_COLLECT_EPISODE=0이면 비활성화)
+        self._collect_episode = os.environ.get("AIC_COLLECT_EPISODE", "1").strip() not in ("0", "false", "False")
+        self.get_logger().info(f"[CollectWrapper] Episode collection: {'enabled' if self._collect_episode else 'disabled'}")
+
         # 저장 경로
         self._save_dir = Path(os.environ.get("AIC_DEMO_DIR", os.path.expanduser("~/aic_demos")))
         self._save_dir.mkdir(parents=True, exist_ok=True)
@@ -237,7 +241,8 @@ class CollectWrapper(Policy):
     # =========================================================================
 
     def insert_cable(self, task, get_observation, move_robot, send_feedback, **kwargs):
-        self._init_episode(task)
+        if self._collect_episode:
+            self._init_episode(task)
 
         # F5: 매 trial 시작 시 조기 종료 플래그 리셋 (이전 trial 이월 방지)
         self._insertion_complete = False
@@ -254,7 +259,7 @@ class CollectWrapper(Policy):
             if obs is not None:
                 last_obs[0] = obs
                 # 이전 action이 있으면 기록
-                if last_action[0] is not None:
+                if self._collect_episode and last_action[0] is not None:
                     self._record_step(obs, last_action[0])
 
             # F5: 조기 종료 조건 체크 (AIC_F5_ENABLED=0이면 건너뜀)
@@ -298,15 +303,17 @@ class CollectWrapper(Policy):
             result = True
         except Exception as e:
             self.get_logger().error(f"[CollectWrapper] Inner policy error: {e}")
-            self._save_episode(success=False)
+            if self._collect_episode:
+                self._save_episode(success=False)
             return False
 
-        # 조기 종료 메타 기록 (있으면)
-        self._task_meta["early_terminated"] = early_terminated
-        if early_terminated:
-            self._task_meta["early_term_source"] = early_term_reason
+        if self._collect_episode:
+            # 조기 종료 메타 기록 (있으면)
+            self._task_meta["early_terminated"] = early_terminated
+            if early_terminated:
+                self._task_meta["early_term_source"] = early_term_reason
 
-        self._save_episode(success=success)
+            self._save_episode(success=success)
         return result
 
     def _check_insertion_success(self, task: Task, threshold: float = 0.02) -> bool:
