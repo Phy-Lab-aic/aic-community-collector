@@ -733,11 +733,14 @@ with tab_collect:
 
     # 파라미터 기본값
     _params = (loaded_cfg.get("parameters") or load_default_config().get("parameters") or {})
+    # 공식 범위: task_board_description.md 기준
+    # NIC: translation [-0.0215, 0.0234], yaw ±10° (±0.1745 rad)
+    # SC:  translation [-0.06, 0.055], yaw 문서 미기재 (±10°로 설정)
     PHYS_LIMITS = {
-        "nic_translation": (-0.03, 0.03),
-        "nic_yaw": (-0.35, 0.35),
-        "sc_translation": (-0.10, 0.10),
-        "sc_yaw": (-0.35, 0.35),
+        "nic_translation": (-0.0215, 0.0234),
+        "nic_yaw": (-0.1745, 0.1745),
+        "sc_translation": (-0.06, 0.055),
+        "sc_yaw": (-0.1745, 0.1745),
     }
 
     # trial별 삽입 대상 파라미터만 매핑

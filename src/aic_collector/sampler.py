@@ -43,14 +43,15 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# AIC 기본값 — sample_config.yaml에서 추출한 trial별 공식 고정값
-# ~/ws_aic/src/aic/aic_engine/config/sample_config.yaml 참고
+# AIC 기본값 — task_board_description.md 공식 범위 내로 클램핑
+# 참고: sample_config.yaml의 nic translation(0.036)은 공식 문서 범위
+#       [-0.0215, 0.0234]를 초과하므로, 문서 기준 최대값으로 보정.
 # ---------------------------------------------------------------------------
 
 AIC_DEFAULT_PARAMS: dict[str, float] = {
-    "nic0_translation": 0.036,    # trial_1 nic_rail_0
+    "nic0_translation": 0.0234,   # trial_1 nic_rail_0 (공식 max)
     "nic0_yaw": 0.0,
-    "nic1_translation": 0.036,    # trial_2 nic_rail_1
+    "nic1_translation": 0.0234,   # trial_2 nic_rail_1 (공식 max)
     "nic1_yaw": 0.0,
     "sc0_translation": 0.042,     # sc_rail_0 (trial 1/2 배경)
     "sc0_yaw": 0.1,
