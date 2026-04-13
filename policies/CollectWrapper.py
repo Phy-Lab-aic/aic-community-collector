@@ -114,9 +114,11 @@ class CollectWrapper(Policy):
     def _init_episode(self, task: Task):
         ep_name = f"episode_{self._episode_counter:04d}"
         self._ep_dir = self._save_dir / ep_name
-        (self._ep_dir / "images" / "left").mkdir(parents=True, exist_ok=True)
-        (self._ep_dir / "images" / "center").mkdir(parents=True, exist_ok=True)
-        (self._ep_dir / "images" / "right").mkdir(parents=True, exist_ok=True)
+
+        if self._collect_episode:
+            (self._ep_dir / "images" / "left").mkdir(parents=True, exist_ok=True)
+            (self._ep_dir / "images" / "center").mkdir(parents=True, exist_ok=True)
+            (self._ep_dir / "images" / "right").mkdir(parents=True, exist_ok=True)
 
         self._states = []
         self._actions = []
@@ -211,24 +213,25 @@ class CollectWrapper(Policy):
         self._step += 1
 
     def _save_episode(self, success: bool):
-        if self._step == 0:
-            self.get_logger().warn(f"[CollectWrapper] Episode {self._episode_counter} empty — skipping save")
-            return
-
-        np.save(str(self._ep_dir / "states.npy"), np.array(self._states))
-        np.save(str(self._ep_dir / "actions.npy"), np.array(self._actions))
-        np.save(str(self._ep_dir / "wrenches.npy"), np.array(self._wrenches))
-        np.save(str(self._ep_dir / "joint_velocities.npy"), np.array(self._joint_velocities))
-        np.save(str(self._ep_dir / "joint_efforts.npy"), np.array(self._joint_efforts))
-        np.save(str(self._ep_dir / "timestamps.npy"), np.array(self._timestamps))
-
         self._task_meta["success"] = success
         self._task_meta["num_steps"] = self._step
         self._task_meta["duration_sec"] = self._timestamps[-1] - self._timestamps[0] if self._timestamps else 0
         # Trial 실행 시간: insert_cable 진입~_save_episode 호출 시점까지 (F5 P2)
         self._task_meta["trial_duration_sec"] = round(time.time() - self._trial_start_time, 3)
+
+        # metadata.json은 항상 저장 (duration, early_terminated 등 postprocess에서 필요)
+        self._ep_dir.mkdir(parents=True, exist_ok=True)
         with open(self._ep_dir / "metadata.json", "w") as f:
             json.dump(self._task_meta, f, indent=2)
+
+        # 무거운 데이터 (npy, images)는 episode 수집 활성화 시에만
+        if self._collect_episode and self._step > 0:
+            np.save(str(self._ep_dir / "states.npy"), np.array(self._states))
+            np.save(str(self._ep_dir / "actions.npy"), np.array(self._actions))
+            np.save(str(self._ep_dir / "wrenches.npy"), np.array(self._wrenches))
+            np.save(str(self._ep_dir / "joint_velocities.npy"), np.array(self._joint_velocities))
+            np.save(str(self._ep_dir / "joint_efforts.npy"), np.array(self._joint_efforts))
+            np.save(str(self._ep_dir / "timestamps.npy"), np.array(self._timestamps))
 
         self.get_logger().info(
             f"[CollectWrapper] Episode {self._episode_counter} saved: "
@@ -241,12 +244,9 @@ class CollectWrapper(Policy):
     # =========================================================================
 
     def insert_cable(self, task, get_observation, move_robot, send_feedback, **kwargs):
-        if self._collect_episode:
-            self._init_episode(task)
-        else:
-            # episode 비활성화 시에도 _task_meta 최소 초기화
-            # (_check_insertion_success 등에서 참조하므로 필요)
-            self._task_meta = {}
+        # _init_episode는 항상 호출 — metadata 수집은 episode 활성화 여부와 무관
+        # (무거운 파일 저장만 _collect_episode로 분기)
+        self._init_episode(task)
 
         # F5: 매 trial 시작 시 조기 종료 플래그 리셋 (이전 trial 이월 방지)
         self._insertion_complete = False
@@ -307,17 +307,15 @@ class CollectWrapper(Policy):
             result = True
         except Exception as e:
             self.get_logger().error(f"[CollectWrapper] Inner policy error: {e}")
-            if self._collect_episode:
-                self._save_episode(success=False)
+            self._save_episode(success=False)
             return False
 
-        if self._collect_episode:
-            # 조기 종료 메타 기록 (있으면)
-            self._task_meta["early_terminated"] = early_terminated
-            if early_terminated:
-                self._task_meta["early_term_source"] = early_term_reason
+        # 조기 종료 메타 기록
+        self._task_meta["early_terminated"] = early_terminated
+        if early_terminated:
+            self._task_meta["early_term_source"] = early_term_reason
 
-            self._save_episode(success=success)
+        self._save_episode(success=success)
         return result
 
     def _check_insertion_success(self, task: Task, threshold: float = 0.02) -> bool:
