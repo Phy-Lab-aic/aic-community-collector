@@ -186,25 +186,6 @@ def _bag_duration_sec(bag_dir: Path | None) -> float | None:
     return None
 
 
-def _bag_has_insertion_event(bag_dir: Path | None) -> bool | None:
-    """bag/metadata.yaml에서 /scoring/insertion_event 메시지가 1건 이상이면 True."""
-    if not bag_dir:
-        return None
-    meta_path = bag_dir / "metadata.yaml"
-    if not meta_path.exists():
-        return None
-    try:
-        with open(meta_path) as f:
-            meta = yaml.safe_load(f) or {}
-        topics = meta.get("rosbag2_bagfile_information", {}).get("topics_with_message_count", [])
-        for t in topics:
-            name = t.get("topic_metadata", {}).get("name", "")
-            if name == "/scoring/insertion_event" and t.get("message_count", 0) > 0:
-                return True
-        return False
-    except Exception:
-        return None
-
 
 def _scoring_duration_sec(trial_scoring: dict) -> float | None:
     """scoring tier_2 > duration > message에서 'Task duration: N.NN seconds' 파싱."""
@@ -305,17 +286,12 @@ def build_tags(
         if dur is not None:
             tags["trial_duration_sec"] = dur
 
-        # early_terminated ← bag insertion_event → scoring tier_3 → 실패 시 false
-        bag_ie = _bag_has_insertion_event(bag_dir)
-        if bag_ie is not None:
-            tags["early_terminated"] = bag_ie
-            if bag_ie:
-                tags["early_term_source"] = "insertion_event"
-        elif success_from_scoring:
+        # early_terminated ← scoring tier_3 기준 (bag insertion_event는 policy가
+        # publish하므로 scoring 성공 여부와 무관하여 신뢰 불가)
+        if success_from_scoring:
             tags["early_terminated"] = True
             tags["early_term_source"] = "insertion_event"
         else:
-            # bag도 없고 성공도 아닌 경우: 삽입 이벤트 없었음
             tags["early_terminated"] = False
 
     if parameters:
