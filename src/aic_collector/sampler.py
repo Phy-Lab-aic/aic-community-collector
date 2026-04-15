@@ -2,23 +2,23 @@
 """
 파라미터 샘플링 유틸.
 
-입력:
-  - 파라미터 범위 dict: {"nic0_translation": (-0.0215, 0.0234), ...}
-  - 전략: uniform | lhs | sobol
-  - seed, runs
+두 가지 모드를 지원한다:
 
-출력:
-  - 리스트 of dict: [{"nic0_translation": 0.01, ...}, ...]
-  - 각 dict가 하나의 run에 해당
+1. Sweep 모드 (`sample_parameters`)
+   - 입력: 파라미터 범위 dict + 전략(uniform/lhs/sobol/static) + runs/seed
+   - 출력: [{"nic0_translation": 0.01, ...}, ...] (각 dict = 한 run)
+
+2. Training 모드 (`sample_training_configs`)
+   - 입력: training 섹션 dict + task_type("sfp"|"sc") + count/seed
+   - 출력: List[TrainingSample] — 각 항목은 NIC/SC rail 선택, pose, target, gripper
+   - 결정적 순환(target cycling)으로 SFP 10종 / SC 2종 균등 분포 보장
 
 재현성:
-  동일 seed + 동일 범위 + 동일 전략 → 동일 출력 보장 (단위 테스트로 확인)
+  동일 seed + 동일 입력 → 동일 출력 보장 (단위 테스트로 확인)
 
-Usage (CLI):
+Usage (CLI, sweep 모드):
     python sampler.py --strategy lhs --runs 10 --seed 42 \\
         --config configs/e2e_default.yaml
-
-    # 출력: JSON 배열 (stdout)
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -204,6 +205,235 @@ def sample_parameters(
         {k: round(float(arr[i, d]), 4) for d, k in enumerate(keys)}
         for i in range(runs)
     ]
+
+
+# ---------------------------------------------------------------------------
+# Training 샘플러 (학습 데이터 수집용)
+# ---------------------------------------------------------------------------
+#
+# Sweep과 달리 각 샘플이 하나의 완전한 scene을 서술한다:
+#   - NIC card 1~5개 (rail 0~4 중 비복원)
+#   - SC port 1~2개 (rail 0,1 중)
+#   - Target은 결정적 순환 (SFP 10종 / SC 2종 균등)
+#   - Gripper offset은 nominal ± 범위로 랜덤
+#
+# Target cycling 보장: sample_index로 target이 결정되고,
+# 해당 target rail은 활성 rail 목록에 강제로 포함된다.
+
+
+SFP_TARGET_CYCLE: list[tuple[int, str]] = [
+    (rail, port)
+    for rail in range(5)
+    for port in ("sfp_port_0", "sfp_port_1")
+]
+"""SFP 10종 target 순환 (5 rail × 2 port)."""
+
+SC_TARGET_CYCLE: list[tuple[int, str]] = [
+    (0, "sc_port_0"),
+    (1, "sc_port_1"),
+]
+"""SC 2종 target 순환."""
+
+
+GRIPPER_NOMINAL_DEFAULT: dict[str, dict[str, float]] = {
+    "sfp": {
+        "x": 0.0, "y": 0.015385, "z": 0.04245,
+        "roll": 0.4432, "pitch": -0.4838, "yaw": 1.3303,
+    },
+    "sc": {
+        "x": 0.0, "y": 0.015385, "z": 0.04045,
+        "roll": 0.4432, "pitch": -0.4838, "yaw": 1.3303,
+    },
+}
+"""Gripper nominal 값 (task_board_description.md 기준)."""
+
+
+RANGES_DEFAULT: dict[str, Any] = {
+    "nic_translation": (-0.0215, 0.0234),
+    "nic_yaw":         (-0.1745, 0.1745),
+    "sc_translation":  (-0.06,   0.055),
+    "gripper_xy":      0.002,
+    "gripper_z":       0.002,
+    "gripper_rpy":     0.04,
+}
+
+
+@dataclass
+class TrainingSample:
+    """Training scene 한 개의 완전한 서술.
+
+    build_training_config(sample)이 이 값만 가지고 엔진 config YAML을 생성한다.
+    """
+
+    task_type: str                    # "sfp" | "sc"
+    sample_index: int                 # 0-based, target cycling 인덱스
+    seed: int                         # 이 샘플 생성 per-sample seed
+
+    nic_rails: list[int] = field(default_factory=list)
+    """활성 NIC rail 번호 목록 (오름차순). 길이 1~5."""
+
+    nic_poses: dict[int, dict[str, float]] = field(default_factory=dict)
+    """{rail_idx: {translation, yaw}} — nic_rails 각각에 대응."""
+
+    sc_rails: list[int] = field(default_factory=list)
+    """활성 SC rail 번호 목록. 길이 1~2."""
+
+    sc_poses: dict[int, dict[str, float]] = field(default_factory=dict)
+    """{rail_idx: {translation, yaw}} — sc_poses[r]['yaw']는 항상 0."""
+
+    target_rail: int = 0
+    """타겟 rail 번호 (SFP: 0~4 / SC: 0~1). 반드시 활성 목록에 포함됨."""
+
+    target_port_name: str = ""
+    """타겟 port 이름 — 엔진의 tasks.task_1.port_name에 주입."""
+
+    gripper: dict[str, float] = field(default_factory=dict)
+    """{x, y, z, roll, pitch, yaw} — nominal ± 랜덤."""
+
+    def to_dict(self) -> dict:
+        """JSON 직렬화용 dict 변환 (int 키 → str)."""
+        d = asdict(self)
+        d["nic_poses"] = {str(k): v for k, v in self.nic_poses.items()}
+        d["sc_poses"] = {str(k): v for k, v in self.sc_poses.items()}
+        return d
+
+
+def _resolve_range(cfg_ranges: dict, key: str) -> tuple[float, float]:
+    """cfg.training.ranges에서 (lo, hi)를 읽어오거나 기본값 반환."""
+    v = cfg_ranges.get(key, RANGES_DEFAULT[key])
+    if isinstance(v, (list, tuple)) and len(v) == 2:
+        return float(v[0]), float(v[1])
+    raise ValueError(f"ranges.{key}은 [min, max] 형식이어야 합니다 (받음: {v!r})")
+
+
+def _resolve_scalar(cfg_ranges: dict, key: str) -> float:
+    v = cfg_ranges.get(key, RANGES_DEFAULT[key])
+    return float(v)
+
+
+def sample_training_configs(
+    training_cfg: dict,
+    task_type: str,
+    count: int,
+    seed: int,
+    start_index: int = 0,
+) -> list[TrainingSample]:
+    """Training용 scene 샘플을 count개 생성.
+
+    Args:
+        training_cfg: e2e config의 `training` 섹션 (scene, ranges, gripper_nominal 포함)
+        task_type: "sfp" | "sc"
+        count: 생성할 샘플 수
+        seed: 재현용 base seed. per-sample seed는 `seed + start_index + i`로 파생.
+        start_index: append 모드에서 기존 번호 다음부터 이어서 생성할 때의 시작 인덱스.
+                     target cycling과 seed 파생에 영향.
+
+    Returns:
+        List[TrainingSample] — 길이 count
+    """
+    if task_type not in ("sfp", "sc"):
+        raise ValueError(f"task_type은 'sfp' 또는 'sc'여야 합니다 (받음: {task_type!r})")
+    if count < 0:
+        raise ValueError(f"count는 0 이상이어야 합니다 (받음: {count})")
+
+    scene_cfg = training_cfg.get("scene", {}) or {}
+    ranges_cfg = training_cfg.get("ranges", {}) or {}
+    gripper_nominal_cfg = training_cfg.get("gripper_nominal", {}) or GRIPPER_NOMINAL_DEFAULT
+    nominal = gripper_nominal_cfg.get(task_type, GRIPPER_NOMINAL_DEFAULT[task_type])
+
+    nic_count_range = scene_cfg.get("nic_count_range", [1, 5])
+    sc_count_range = scene_cfg.get("sc_count_range", [1, 2])
+    target_cycling = scene_cfg.get("target_cycling", True)
+
+    nic_tr = _resolve_range(ranges_cfg, "nic_translation")
+    nic_yaw_r = _resolve_range(ranges_cfg, "nic_yaw")
+    sc_tr = _resolve_range(ranges_cfg, "sc_translation")
+    g_xy = _resolve_scalar(ranges_cfg, "gripper_xy")
+    g_z = _resolve_scalar(ranges_cfg, "gripper_z")
+    g_rpy = _resolve_scalar(ranges_cfg, "gripper_rpy")
+
+    cycle = SFP_TARGET_CYCLE if task_type == "sfp" else SC_TARGET_CYCLE
+    max_rails = 5 if task_type == "sfp" else 2
+
+    samples: list[TrainingSample] = []
+    for i in range(count):
+        global_index = start_index + i
+        per_seed = seed + global_index
+        rng = np.random.default_rng(per_seed)
+
+        # 1) Target (결정적 순환)
+        if target_cycling:
+            target_rail, target_port = cycle[global_index % len(cycle)]
+        else:
+            idx = int(rng.integers(0, len(cycle)))
+            target_rail, target_port = cycle[idx]
+
+        # 2) NIC 개수/선택 (task가 sfp면 target rail 포함 필수)
+        n_nic_lo, n_nic_hi = int(nic_count_range[0]), int(nic_count_range[1])
+        n_nic = int(rng.integers(n_nic_lo, n_nic_hi + 1))
+        all_nic = list(range(5))
+        if task_type == "sfp":
+            others = [r for r in all_nic if r != target_rail]
+            others_pick = rng.choice(len(others), size=max(0, n_nic - 1), replace=False)
+            selected_nic = sorted([target_rail] + [others[i] for i in others_pick])
+        else:
+            pick = rng.choice(5, size=n_nic, replace=False)
+            selected_nic = sorted(int(r) for r in pick)
+
+        # 3) SC 개수/선택 (task가 sc면 target rail 포함)
+        n_sc_lo, n_sc_hi = int(sc_count_range[0]), int(sc_count_range[1])
+        n_sc = int(rng.integers(n_sc_lo, n_sc_hi + 1))
+        all_sc = [0, 1]
+        if task_type == "sc":
+            others = [r for r in all_sc if r != target_rail]
+            if n_sc == 1:
+                selected_sc = [target_rail]
+            else:
+                selected_sc = sorted([target_rail] + others)
+        else:
+            if n_sc >= 2:
+                selected_sc = [0, 1]
+            else:
+                selected_sc = [int(rng.integers(0, 2))]
+
+        # 4) Pose 샘플링
+        nic_poses: dict[int, dict[str, float]] = {}
+        for r in selected_nic:
+            nic_poses[r] = {
+                "translation": round(float(rng.uniform(*nic_tr)), 4),
+                "yaw":         round(float(rng.uniform(*nic_yaw_r)), 4),
+            }
+        sc_poses: dict[int, dict[str, float]] = {}
+        for r in selected_sc:
+            sc_poses[r] = {
+                "translation": round(float(rng.uniform(*sc_tr)), 4),
+                "yaw":         0.0,
+            }
+
+        # 5) Gripper offset (nominal ± 범위)
+        gripper = {
+            "x":     round(nominal["x"]     + float(rng.uniform(-g_xy, g_xy)), 6),
+            "y":     round(nominal["y"]     + float(rng.uniform(-g_xy, g_xy)), 6),
+            "z":     round(nominal["z"]     + float(rng.uniform(-g_z,  g_z)),  6),
+            "roll":  round(nominal["roll"]  + float(rng.uniform(-g_rpy, g_rpy)), 6),
+            "pitch": round(nominal["pitch"] + float(rng.uniform(-g_rpy, g_rpy)), 6),
+            "yaw":   round(nominal["yaw"]   + float(rng.uniform(-g_rpy, g_rpy)), 6),
+        }
+
+        samples.append(TrainingSample(
+            task_type=task_type,
+            sample_index=global_index,
+            seed=per_seed,
+            nic_rails=selected_nic,
+            nic_poses=nic_poses,
+            sc_rails=selected_sc,
+            sc_poses=sc_poses,
+            target_rail=int(target_rail),
+            target_port_name=target_port,
+            gripper=gripper,
+        ))
+
+    return samples
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,13 @@
 # Config Reference
 
-`configs/e2e_*.yaml` 파일의 전체 항목 설명.
+`configs/e2e_*.yaml` 파일(Sweep 모드)과 `configs/train/{sfp,sc}/config_*.yaml` 파일(Training 모드)의 항목 설명.
 
-## 전체 구조
+## 두 가지 Config 유형
+
+- **Sweep config** (`configs/e2e_*.yaml`) — 수집 도구(Prefect flow)가 읽어 파라미터를 샘플링하면서 수집을 실행.
+- **Training config** (`configs/train/{sfp,sc}/config_*.yaml`) — 학습 데이터용 엔진 config. 각 파일이 하나의 trial을 바로 실행할 수 있도록 **완전한 scene**을 이미 포함하고 있음(플레이스홀더 없음). Web UI의 Training 모드에서 일괄 생성됨.
+
+## Sweep config 전체 구조
 
 ```yaml
 schema_version: "0.1"
@@ -151,3 +156,54 @@ policy:
 | `e2e_trial2_only.yaml` | 5 | [2] | cheatcode | lhs | Trial 2 집중 수집 |
 
 Web UI에서 설정을 변경한 뒤 저장하면 `configs/e2e_*.yaml`로 추가됩니다.
+
+---
+
+## Training Config
+
+Web UI **수집 탭 → 🎓 Training** 모드에서 일괄 생성되는 엔진 config들.
+Sweep config와 달리 각 파일이 **완전한 scene**을 가지므로 엔진에 바로 넘길 수 있다(플레이스홀더 없음).
+
+### 출력 구조
+
+```
+configs/train/
+├── sfp/
+│   ├── config_sfp_0000.yaml    ← trial 1개를 완전히 기술
+│   ├── config_sfp_0001.yaml
+│   ...
+└── sc/
+    ├── config_sc_0000.yaml
+    ...
+```
+
+파일명의 `NNNN`은 4자리 sample index. **append 모드(기본)** 에서는 기존 마지막 번호 다음부터 이어서 생성됩니다.
+
+### 자동 생성 규칙 (피드백 문서 기준)
+
+| 항목 | 규칙 |
+|------|------|
+| Task board pose | SFP `(0.15, -0.2, 1.14, π)` / SC `(0.17, 0, 1.14, 3.0)` 고정 |
+| NIC card 개수 | 1~5개 랜덤 (rail 0~4 비복원 선택) |
+| NIC card translation | `[-0.0215, 0.0234]` 균등 |
+| NIC card yaw | `[-0.1745, 0.1745]` 균등 (±10°) |
+| SC port 개수 | 1~2개 랜덤 (rail 0, 1 선택) |
+| SC port translation | `[-0.06, 0.055]` 균등 |
+| SC port yaw | 0.0 고정 |
+| Gripper offset xyz | nominal ± 0.002 m 랜덤 |
+| Gripper offset rpy | nominal ± 0.04 rad 랜덤 |
+| Mount rails | trial_1 패턴 고정 |
+| **Target** | **SFP 10종(5 rail × 2 port), SC 2종 결정적 순환 — 균등 분포 보장** |
+
+### 결정적 순환 (Target cycling)
+
+Training 모드는 `sample_index`를 target cycle 배열 인덱스로 사용해 **동일 seed라도 target 분포를 완벽히 균등**하게 맞춥니다.
+
+- **SFP**: `[(rail, port) for rail in 0..4 for port in ("sfp_port_0", "sfp_port_1")]` → 총 10종. `sample_index % 10`.
+- **SC**: `[(0, "sc_port_0"), (1, "sc_port_1")]` → 2종. `sample_index % 2`.
+- **Target rail은 활성 rail 목록에 강제 포함**됩니다 (target이 없는 scene을 생성하지 않도록).
+
+### 재현성
+
+- 각 샘플의 RNG seed는 `base_seed + sample_index`로 파생 → append 모드에서도 새 샘플이 기존과 중복되지 않음.
+- 동일 `base_seed` + 동일 `count` + 동일 `task_type` → 동일 config 시퀀스.

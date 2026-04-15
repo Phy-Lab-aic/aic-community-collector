@@ -36,7 +36,11 @@ uv run src/aic_collector/webapp.py
 
 ## 데이터 수집
 
-모든 항목이 통과하면 **수집** 탭에서 Policy, 반복 횟수, 샘플링 전략을 설정하고 수집을 시작합니다.
+**수집** 탭 상단의 **모드 라디오**에서 목적에 맞는 모드를 선택합니다.
+
+- **🔬 Sweep (파라미터 실험)** — 파라미터 범위를 훑으며 평가/실험 데이터 수집. Policy, 반복 횟수, 샘플링 전략(LHS/Uniform/Sobol/Static)을 설정하고 수집을 시작.
+- **🎓 Training (학습 데이터 생성)** — 학습 데이터용 config YAML을 `configs/train/{sfp,sc}/`에 일괄 생성. SFP 10종·SC 2종 target을 **결정적 순환**으로 균등 분배. NIC(1~5)·SC(1~2) 엔티티 개수와 gripper offset을 랜덤화.
+
 저장된 Config를 불러오거나 직접 설정할 수 있습니다.
 
 샘플링 전략은 씬 파라미터(케이블 위치, 각도 등)를 랜덤화하는 방법입니다:
@@ -69,9 +73,11 @@ CSV 다운로드도 가능합니다.
 
 | 파일 | 용도 |
 |------|------|
-| `e2e_default.yaml` | 기본 설정 (3 trial, 10 runs, LHS) |
+| `e2e_default.yaml` | Sweep 기본 설정 (3 trial, 10 runs, LHS) |
 | `e2e_test.yaml` | 빠른 테스트 (1 trial, 1 run) |
 | `e2e_trial2_only.yaml` | Trial 2만 집중 수집 |
+| `train/sfp/config_sfp_NNNN.yaml` | Training 모드에서 자동 생성되는 SFP config |
+| `train/sc/config_sc_NNNN.yaml` | Training 모드에서 자동 생성되는 SC config |
 
 전체 항목 설명은 [Config Reference](docs/config-reference.md)를 참고하세요.
 

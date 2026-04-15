@@ -67,7 +67,21 @@ Network URL: http://192.168.x.x:8501
 
 ## 데이터 수집
 
-### Config 불러오기
+### 모드 선택
+
+수집 탭 상단의 **모드 라디오**에서 목적에 맞는 모드를 먼저 선택합니다.
+
+| 모드 | 목적 | 결과물 |
+|------|------|--------|
+| 🔬 **Sweep** | 파라미터를 변화시키며 평가/실험 데이터 수집 | `~/aic_community_e2e/run_*/` (수집된 bag/scoring/episode) |
+| 🎓 **Training** | 학습 데이터용 엔진 config 일괄 생성 | `configs/train/{sfp,sc}/config_*.yaml` |
+
+- **Sweep**은 LHS/Uniform/Sobol 샘플링으로 N회 반복 수집을 실행합니다 (기존 흐름).
+- **Training**은 SFP/SC task별로 scene이 다른 config 파일을 다량 만듭니다. 수집 자체는 별도로 실행합니다(후속 릴리스에서 원클릭 연동 예정).
+
+Training 모드의 상세 규칙은 [Config Reference → Training Config](config-reference.md#training-config)를 참고하세요.
+
+### Config 불러오기 (Sweep 모드)
 
 기본 제공 Config 중 하나를 선택하거나, 직접 설정할 수 있습니다.
 
@@ -101,7 +115,18 @@ Network URL: http://192.168.x.x:8501
 
 기본 파라미터 범위는 AIC 챌린지 표준값입니다. 좁은 범위로 집중 수집하려면 각 trial의 "파라미터 범위" expander를 펼쳐서 min/max를 조정하세요.
 
-### 수집 시작
+### Training 모드로 학습 데이터 config 만들기
+
+1. 수집 탭 상단 모드를 **🎓 Training**으로 전환
+2. `SFP configs` / `SC configs` 수량 입력 (권장 비율 5:2, 예 SFP=50 / SC=20)
+3. `Seed` 값 지정 (재현 필요 없으면 기본값 유지)
+4. **기존 번호에 이어서 생성** 토글 — 기본 ON. 끄면 0부터 생성(기존 파일은 유지)
+5. **🎲 Target 분포 미리보기**로 균등 분포 확인
+6. **🎓 Training configs 생성** 클릭 → `configs/train/sfp/`, `configs/train/sc/`에 파일 생성
+
+생성된 config는 이미 완전한 scene을 포함하므로 엔진에 바로 넘길 수 있습니다. 생성 단계만 Training 모드가 담당하고, 실제 시뮬레이션 실행은 별도로 수행합니다.
+
+### 수집 시작 (Sweep 모드)
 
 **🚀 수집 시작** 버튼을 클릭합니다. 다음 순서로 진행됩니다:
 

@@ -663,9 +663,164 @@ with tab_env:
 # --- 수집 탭 ---
 with tab_collect:
 
-    # ── Config 불러오기 ──
-    config_files = sorted(CONFIGS_DIR.glob("e2e_*.yaml")) if CONFIGS_DIR.exists() else []
-    config_names = ["(직접 설정)"] + [f.stem for f in config_files]
+    # ── 모드 선택 ──
+    mode_label = st.radio(
+        "모드",
+        ["🔬 Sweep (파라미터 실험)", "🎓 Training (학습 데이터 생성)"],
+        horizontal=True,
+        index=0,
+        key="collect_mode",
+        help=(
+            "Sweep: 파라미터 범위를 훑으며 평가/실험 데이터 수집.\n"
+            "Training: 학습 데이터용 config 파일을 configs/train/{sfp,sc}/ 에 일괄 생성."
+        ),
+    )
+    is_training_mode = "Training" in mode_label
+
+    st.divider()
+
+if is_training_mode:
+    with tab_collect:
+        # ── Training 모드 UI (학습 데이터 config 생성) ──
+        st.subheader("학습 데이터 config 생성")
+        st.caption(
+            "SFP/SC task별로 config YAML 파일을 `configs/train/{sfp,sc}/`에 생성합니다. "
+            "Target이 SFP 10종·SC 2종 균등하게 순환되도록 보장됩니다."
+        )
+
+        col_sfp, col_sc = st.columns(2)
+        with col_sfp:
+            sfp_count = st.number_input(
+                "SFP configs",
+                min_value=0, max_value=1000, value=50, step=1,
+                key="train_sfp_count",
+                help="SFP 10가지 target을 균등 순환합니다. 10의 배수 권장.",
+            )
+        with col_sc:
+            sc_count = st.number_input(
+                "SC configs",
+                min_value=0, max_value=1000, value=20, step=1,
+                key="train_sc_count",
+                help="SC 2가지 target을 균등 순환합니다. 2의 배수 권장.",
+            )
+
+        col_seed, col_strat, col_append = st.columns([1, 1, 2])
+        with col_seed:
+            train_seed = st.number_input(
+                "Seed", min_value=0, value=42, key="train_seed",
+                help="재현용 시드. 기존 configs에 이어 생성 시 sample_index로 파생되어 중복 방지.",
+            )
+        with col_strat:
+            train_strategy = st.selectbox(
+                "Sampling", ["uniform"],
+                key="train_strategy",
+                help="MVP는 uniform만 지원. LHS/Sobol은 후속 릴리스.",
+            )
+        with col_append:
+            train_append = st.toggle(
+                "기존 번호에 이어서 생성",
+                value=True, key="train_append_mode",
+                help="켜면 `configs/train/{sfp,sc}/`의 마지막 번호 다음부터 생성. 끄면 0부터(기존 파일은 유지).",
+            )
+
+        # 비율 힌트
+        total_train = sfp_count + sc_count
+        if total_train > 0:
+            ratio_sfp = sfp_count / total_train * 100
+            hint = "✅ 권장 비율" if 65 <= ratio_sfp <= 75 else "⚠️ 권장 비율(SFP 5 : SC 2 ≈ 71% : 29%)과 차이 있음"
+            st.caption(f"📊 비율: SFP **{ratio_sfp:.0f}%** · SC **{100 - ratio_sfp:.0f}%** — {hint}")
+
+        # 분포 미리보기
+        with st.expander("🎲 Target 분포 미리보기", expanded=False):
+            try:
+                from aic_collector.sampler import sample_training_configs
+                import pandas as pd
+                from collections import Counter
+
+                if sfp_count > 0:
+                    s_samples = sample_training_configs({}, "sfp", int(sfp_count), int(train_seed))
+                    tg = Counter((s.target_rail, s.target_port_name) for s in s_samples)
+                    df_sfp = pd.DataFrame([
+                        {"target_rail": r, "port_name": p, "count": c}
+                        for (r, p), c in sorted(tg.items())
+                    ])
+                    st.markdown("**SFP target 분포** (10종 균등)")
+                    st.dataframe(df_sfp, width="stretch", hide_index=True)
+
+                if sc_count > 0:
+                    c_samples = sample_training_configs({}, "sc", int(sc_count), int(train_seed))
+                    tg = Counter((s.target_rail, s.target_port_name) for s in c_samples)
+                    df_sc = pd.DataFrame([
+                        {"target_rail": r, "port_name": p, "count": c}
+                        for (r, p), c in sorted(tg.items())
+                    ])
+                    st.markdown("**SC target 분포** (2종 균등)")
+                    st.dataframe(df_sc, width="stretch", hide_index=True)
+            except Exception as e:
+                st.error(f"미리보기 실패: {e}")
+
+        # 생성 버튼
+        train_root = PROJECT_DIR / "configs/train"
+        sfp_dir = train_root / "sfp"
+        sc_dir = train_root / "sc"
+        template_path = PROJECT_DIR / "configs/community_random_config.yaml"
+
+        # 기존 파일 개수 안내
+        existing_sfp = len(list(sfp_dir.glob("config_sfp_*.yaml"))) if sfp_dir.exists() else 0
+        existing_sc = len(list(sc_dir.glob("config_sc_*.yaml"))) if sc_dir.exists() else 0
+        if existing_sfp or existing_sc:
+            st.caption(
+                f"📁 현재: SFP **{existing_sfp}개** · SC **{existing_sc}개**"
+                + (" · append 모드 ON — 다음 번호부터 추가" if train_append else " · append 모드 OFF — 0부터 생성(기존 파일은 보존됨)")
+            )
+
+        if st.button("🎓 Training configs 생성", type="primary", key="btn_train_gen"):
+            if total_train == 0:
+                st.error("SFP 또는 SC 수량을 1 이상으로 설정하세요.")
+            elif not template_path.exists():
+                st.error(f"템플릿 없음: `{template_path}`")
+            else:
+                try:
+                    from aic_collector.sampler import sample_training_configs
+                    from aic_collector.build_training_config import (
+                        next_config_index, write_training_configs,
+                    )
+
+                    written_all: list[Path] = []
+                    if sfp_count > 0:
+                        start = next_config_index(sfp_dir, "config_sfp") if train_append else 0
+                        samples = sample_training_configs(
+                            {}, "sfp", int(sfp_count), int(train_seed), start_index=start,
+                        )
+                        written_all += write_training_configs(samples, sfp_dir, template_path)
+                    if sc_count > 0:
+                        start = next_config_index(sc_dir, "config_sc") if train_append else 0
+                        samples = sample_training_configs(
+                            {}, "sc", int(sc_count), int(train_seed), start_index=start,
+                        )
+                        written_all += write_training_configs(samples, sc_dir, template_path)
+
+                    st.success(f"✅ {len(written_all)}개 config 생성됨")
+                    st.caption(f"📁 `{sfp_dir}` · `{sc_dir}`")
+                    with st.expander("생성 파일 목록", expanded=False):
+                        st.code("\n".join(str(p.relative_to(PROJECT_DIR)) for p in written_all))
+                except Exception as e:
+                    st.error(f"생성 실패: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+        st.info(
+            "💡 Training 모드는 config **파일만** 생성합니다. "
+            "수집 실행은 Sweep 모드에서 생성된 config를 지정해 진행하거나, "
+            "별도 Training flow(후속 릴리스)가 추가될 예정입니다.",
+            icon="💡",
+        )
+
+else:  # Sweep 모드 (기존 UI)
+    with tab_collect:
+        # ── Config 불러오기 ──
+        config_files = sorted(CONFIGS_DIR.glob("e2e_*.yaml")) if CONFIGS_DIR.exists() else []
+        config_names = ["(직접 설정)"] + [f.stem for f in config_files]
 
     loaded_cfg = {}
     selected_config = st.selectbox("Config 불러오기", config_names, index=0, key="load_config")
