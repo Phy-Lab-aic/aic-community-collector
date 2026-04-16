@@ -43,6 +43,12 @@ import yaml
 
 # PROJECT_DIR = aic-community-collector/ (루트)
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
+
+# streamlit run으로 실행될 때는 패키지 설치 없이도 import 가능해야 함
+_SRC_DIR = str(PROJECT_DIR / "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
 POLICIES_DIR = PROJECT_DIR / "policies"
 PIXI_POLICIES_DIR = (
     Path.home()
