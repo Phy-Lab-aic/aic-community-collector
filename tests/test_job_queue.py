@@ -168,6 +168,17 @@ def test_write_plan_explicit_index_width_is_preserved() -> None:
         assert path.name == "config_sfp_0050.yaml"
 
 
+def test_write_plans_explicit_index_width_is_preserved() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        plans = sample_scenes({}, "sfp", 2, 42, start_index=50)
+        paths = write_plans(plans, root, TEMPLATE_PATH, index_width=4)
+        assert [p.name for p in paths] == [
+            "config_sfp_0050.yaml",
+            "config_sfp_0051.yaml",
+        ]
+
+
 def test_next_index_empty_returns_zero() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -295,6 +306,7 @@ def main() -> int:
         ("writer: write_plan pending 경로", test_write_plan_creates_pending_file),
         ("writer: SC task_type 라우팅", test_write_plan_sc_task_type_routes_correctly),
         ("writer: write_plan explicit width", test_write_plan_explicit_index_width_is_preserved),
+        ("writer: write_plans explicit width", test_write_plans_explicit_index_width_is_preserved),
         ("writer: next_index 빈 root=0", test_next_index_empty_returns_zero),
         ("writer: next_index pending 반영", test_next_index_after_pending_writes),
         ("writer: next_index 모든 상태 스캔", test_next_index_counts_all_states),
