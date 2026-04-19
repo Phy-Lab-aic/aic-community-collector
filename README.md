@@ -59,6 +59,31 @@ uv run src/aic_collector/webapp.py
 
 ---
 
+## 🤖 Claude Code / Codex로 자동 수집하기
+
+UI나 CLI를 외우기 귀찮다면, **Claude Code**(또는 Codex) 에서 자연어로 시킬 수 있어요. 이 저장소는 `.claude/skills/aic-collect/` 에 **aic-collect 스킬**을 담고 있어서, AI 에이전트가 자동으로 활성화돼 환경 점검 → 큐 생성 → 워커 실행 → 결과 요약까지 대신 해줍니다.
+
+### 시연 영상
+
+<video src="docs/llm-test.mp4" controls width="720" muted>
+  이 브라우저에서는 영상이 재생되지 않습니다. <a href="docs/llm-test.mp4">직접 다운로드 / 재생</a>
+</video>
+
+> 영상이 인라인 재생되지 않으면 [▶ docs/llm-test.mp4](docs/llm-test.mp4) 링크를 눌러 보세요.
+
+### 쓰는 법
+
+1. 저장소를 연 Claude Code에 자연어로 요청:
+   - "테스트용으로 SFP 4개 정도 수집해줘"
+   - "NIC 카드 3개로 고정해서 학습 데이터 20개 만들어줘"
+   - "수집 실패했는데 원인 찾아줘"
+2. 스킬이 자동으로 활성화되어 필요한 값만 한 번 되묻고 나머지는 알아서 진행합니다.
+3. 진행하면서 각 단계의 **실제 명령어**를 함께 보여주므로, 나중에 직접 하고 싶어지면 그대로 복붙하면 됩니다.
+
+자세한 스킬 동작 규약은 [`.claude/skills/aic-collect/SKILL.md`](.claude/skills/aic-collect/SKILL.md) 참고.
+
+---
+
 ## 🔍 1. 환경 점검 탭
 
 **시작할 때 한 번만 하면 되는 건강검진**이에요. 필요한 프로그램이 잘 깔려 있는지 확인해 줘요.
