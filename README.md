@@ -1,121 +1,270 @@
-# AIC Community Data Collector
+# 🤖 AIC Community Data Collector
 
-AI for Industry Challenge 커뮤니티 구성원이 **자신의 Policy로 평가 데이터를 수집**하는 도구.
+**AIC (AI for Industry Challenge)** 대회에 참가하는 친구들이, **내가 만든 로봇 프로그램(Policy)** 으로 **평가 데이터를 자동으로 모아주는 도구**예요.
 
-> 💡 단계별 사용법, 문제 해결, 고급 기능은 [사용 가이드](docs/usage-guide.md)를 참고하세요.
+> 📘 자세한 단계별 안내는 [사용 가이드](docs/usage-guide.md), YAML 설정 항목 설명은 [Config Reference](docs/config-reference.md)에서 볼 수 있어요.
 
-## 전제 조건
+---
 
-챌린지 참가자라면 이미 갖춰져 있습니다.
-설치가 안 되어 있다면 [AIC Getting Started 가이드](https://github.com/intrinsic-dev/aic/blob/main/docs/getting_started.md)를 참고하세요.
+## 🎯 이 프로그램이 뭘 해 주나요?
 
-- Docker + `aic_eval` 컨테이너 (현재 사용자가 docker 그룹에 속해야 합니다)
-- Distrobox
-- pixi + `~/ws_aic/src/aic`
-- [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+로봇 시뮬레이터로 **수십~수백 번의 실험을 자동으로 돌리고, 점수를 모아서 표로 보여주는 프로그램**이에요.
 
-## Quick Start
+### 🍳 비유: "자동 부엌"
+
+| 단계 | 이름 | 하는 일 |
+|---|---|---|
+| 1️⃣ | **작업 관리 (Producer)** | 주문서(YAML 파일)를 만들어서 **대기 폴더**에 쌓아둠 |
+| 2️⃣ | **작업 실행 (Consumer)** | Worker(요리사)가 주문서를 하나씩 꺼내서 로봇 시뮬레이터로 실행 |
+| 3️⃣ | **결과 보기** | 어떤 주문이 성공했는지 점수와 함께 표로 보여줌 |
+
+주문서 만드는 일과 실행하는 일을 **일부러 나눴어요**. 왜냐하면:
+
+- 주문서는 수백 개를 한 번에 쌓아두고, **요리사가 자기 속도로 하나씩 처리** 가능
+- 중간에 컴퓨터가 꺼져도 **주문서는 안 사라져요** (pending 폴더에 남아 있음)
+- 주문 만드는 사람과 실행하는 사람이 달라도 됨
+
+---
+
+## 🛠 시작하기 전에 필요한 것
+
+대회 참가자라면 보통 다 깔려 있을 거예요. 없다면 [AIC Getting Started](https://github.com/intrinsic-dev/aic/blob/main/docs/getting_started.md)를 따라가세요.
+
+- 🐳 **Docker** + `aic_eval` 컨테이너 (내가 `docker` 그룹에 속해 있어야 해요)
+- 📦 **Distrobox**
+- 🌿 **pixi** + `~/ws_aic/src/aic`
+- ⚡ **uv** — Python 패키지 관리 도구
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+
+---
+
+## 🚀 빠르게 시작하기
 
 ```bash
-# 1. 저장소 clone
+# 1. 이 저장소 내려받기
 git clone https://github.com/e7217/aic-community-collector
 cd aic-community-collector
 
-# 2. (선택) policies/ 에 내 policy 파일 넣기
+# 2. (선택) 내가 만든 Policy 파일을 policies/ 폴더에 넣기
 
-# 3. Web UI 실행
+# 3. 웹 화면 열기
 uv run src/aic_collector/webapp.py
 ```
-## 환경 설정
 
-브라우저에서 `http://localhost:8501` 접속 후, **환경 점검** 탭에서 모든 항목이 통과하는지 확인하세요.
+브라우저에서 `http://localhost:8501`에 접속하면 **4개 탭**이 보여요:
 
-> 자세한 단계별 안내는 [사용 가이드 → 환경 점검](docs/usage-guide.md#환경-점검) 참고.
+🔍 환경 점검 · 📋 작업 관리 · 🏃 작업 실행 · 📊 결과
 
-![환경 점검](docs/images/tab_check.png)
+---
 
-## 데이터 수집
+## 🔍 1. 환경 점검 탭
 
-**수집** 탭 상단의 **모드 라디오**에서 목적에 맞는 모드를 선택합니다.
+**시작할 때 한 번만 하면 되는 건강검진**이에요. 필요한 프로그램이 잘 깔려 있는지 확인해 줘요.
 
-- **🔬 Sweep (파라미터 실험)** — 파라미터 범위를 훑으며 평가/실험 데이터 수집. Policy, 반복 횟수, 샘플링 전략(LHS/Uniform/Sobol/Static)을 설정하고 수집을 시작.
-- **🎓 Training (학습 데이터 생성)** — 학습 데이터용 config YAML을 `configs/train/{sfp,sc}/`에 일괄 생성. SFP 10종·SC 2종 target을 **결정적 순환**으로 균등 분배. NIC(1~5)·SC(1~2) 엔티티 개수와 gripper offset을 랜덤화.
+![환경 점검 화면](docs/images/tab_check.png)
 
-저장된 Config를 불러오거나 직접 설정할 수 있습니다.
+- ✅ **초록색 체크** → 통과, 그냥 넘어가기
+- ❌ **빨간 X** → 뭔가 빠졌어요. 옆에 **[설치]** 버튼이 나오면 눌러서 자동 설치
+- ⚠️ **경고** → 수동 설치 필요 (필요한 명령어가 표시돼요)
 
-샘플링 전략은 씬 파라미터(케이블 위치, 각도 등)를 랜덤화하는 방법입니다:
+모두 초록불이 되면 다음 탭으로 이동!
 
-- **LHS** (기본 권장) — 각 차원을 N등분하여 구간마다 한 점씩 샘플링. 적은 횟수로도 고르게 커버
-- **Uniform** — 독립 균등 난수. 단순 랜덤이 필요할 때
-- **Sobol** — 준난수 수열. `runs`를 2의 거듭제곱(8, 16, 32...)으로 설정할 때 효과적
-- **Static** — AIC 공식 고정값 사용. 랜덤 없이 모든 run이 동일 조건 (baseline, 디버깅)
+---
 
-### 내 Policy 사용하기
+## 📋 2. 작업 관리 탭 — 주문서 만들기
 
-1. `policies/` 디렉토리에 Python 파일 추가
-2. `aic_model.policy.Policy`를 상속하고 `insert_cable()` 구현
-3. Web UI 드롭다운에 자동 표시
+로봇이 할 일을 **YAML 설정 파일**로 만들어서 `pending/` 폴더에 쌓아두는 곳이에요.
 
-![수집 설정](docs/images/tab_collect.png)
+![작업 관리 탭 — 설정 화면](docs/images/tab_manage.png)
 
-## 결과 확인
+### 📊 큐 상태 막대
 
-수집이 완료되면 **결과** 탭에서 전체 성공률, 평균 점수, trial별 상세 결과를 확인할 수 있습니다.
-CSV 다운로드도 가능합니다.
+각 Task(SFP, SC)마다 현재 주문서가 어느 상태에 몇 개씩 있는지 막대로 보여줘요:
 
-![수집 결과](docs/images/tab_results.png)
+- 🟡 **pending** — 아직 실행 안 된 주문서
+- 🔵 **running** — 지금 실행 중
+- 🟢 **done** — 성공 완료
+- 🔴 **failed** — 실패
 
-## Config 파일
+### ➕ 큐에 추가
 
-`configs/` 디렉토리의 YAML 파일로 수집 설정을 관리합니다. Web UI의 **Config 관리** 탭에서 조회/저장/삭제할 수 있습니다.
+두 종류의 Task를 만들 수 있어요:
 
-![Config 관리](docs/images/tab_config.png)
+- **SFP** — 네트워크 카드(NIC)에 케이블 꽂기 (5 rail × 2 port = **10종 목표**)
+- **SC** — SC 포트에 연결하기 (rail 0·1 = **2종 목표**)
 
-| 파일 | 용도 |
-|------|------|
-| `e2e_default.yaml` | Sweep 기본 설정 (3 trial, 10 runs, LHS) |
-| `e2e_test.yaml` | 빠른 테스트 (1 trial, 1 run) |
-| `e2e_trial2_only.yaml` | Trial 2만 집중 수집 |
-| `train/sfp/config_sfp_NNNN.yaml` | Training 모드에서 자동 생성되는 SFP config |
-| `train/sc/config_sc_NNNN.yaml` | Training 모드에서 자동 생성되는 SC config |
+#### 🎬 Scene 설정 (씬 구성)
 
-전체 항목 설명은 [Config Reference](docs/config-reference.md)를 참고하세요.
+- **엔티티 개수** — 화면에 놓을 NIC 카드(1~5개), SC 포트(1~2개) 개수
+  - "고정 개수" ON → 매번 정확히 N개
+  - OFF → 1~N개 사이에서 랜덤
+- **Target cycling** — 10종·2종 목표를 **순서대로 돌려가며** 공평하게 뽑아줘요
 
-## CLI 사용
+#### 📏 Parameters — 랜덤화 범위
 
-Web UI 없이 CLI로도 수집 가능합니다. Prefect flow로 직접 실행:
+케이블 위치(translation), 회전(yaw), 그리퍼 오차(gripper offset) 같은 숫자의 **랜덤 범위**를 정해요.
 
-```bash
-# dry-run (설정 확인만, 실제 수집 안 함)
-uv run aic-prefect-run --config configs/e2e_default.yaml --dry-run
+> ⚠️ 슬라이더 최댓값 = **AIC 공식 문서의 허용 최대 범위**예요. 이걸 넘게 설정 못 하게 막혀 있어요.
 
-# 수집 실행 (3회 반복)
-uv run aic-prefect-run --config configs/e2e_default.yaml --runs 3
+**샘플링 전략**:
+- **uniform** (기본) — 매번 독립적으로 무작위
+- **lhs** — 공간을 고르게 채우는 똑똑한 랜덤 (샘플 수 적을 때 유리)
 
-# 빠른 테스트 (1회, trial 1개)
-uv run aic-prefect-run --config configs/e2e_test.yaml
+### 📁 큐 폴더 구조
+
+```
+configs/train/
+  ├─ sfp/
+  │   ├─ pending/   ← 주문서 대기소 (Producer가 여기 넣음)
+  │   ├─ running/   ← 지금 요리 중인 주문
+  │   ├─ done/      ← 성공해서 이동된 주문서
+  │   └─ failed/    ← 실패해서 이동된 주문서
+  └─ sc/ (똑같은 구조)
 ```
 
-## 결과 구조
+### 🧠 내 Policy 사용하기
+
+1. `policies/` 폴더에 Python 파일 추가
+2. `aic_model.policy.Policy`를 상속받고 `insert_cable()` 함수 구현
+3. 작업 실행 탭 드롭다운에서 자동으로 선택 가능!
+
+---
+
+## 🏃 3. 작업 실행 탭 — 요리사가 주문 처리
+
+`pending/`에 쌓인 주문서를 하나씩 꺼내서 **진짜로 시뮬레이터를 돌리는** 곳이에요.
+
+![작업 실행 탭 — 워커 상태와 실행 설정](docs/images/tab_execute.png)
+
+### 🚀 실행 설정
+
+| 옵션 | 뜻 |
+|---|---|
+| **task 필터** | `all` / `sfp` / `sc` — 어떤 종류를 처리할지 |
+| **limit** | 최대 몇 개까지 처리할지 (`0` = 다 끝날 때까지) |
+| **Policy** | 어떤 Policy로 돌릴지 선택 |
+| **SFP/SC 분리** | 체크하면 task마다 **다른 Policy** 사용 가능 |
+| **timeout** | 주문 하나가 너무 오래 걸리면 실패 처리할 시간 |
+| **ground_truth** | 정답 좌표 제공 여부 (OFF면 Policy가 순수 추정) |
+
+### ⚙ 실행 중 화면
+
+워커가 일하는 동안 **3초마다 자동으로 갱신**돼요:
+
+- 📊 **진행률 막대** — 처리한 개수 / 전체 개수
+- ⏱ **ETA (남은 시간)** — "평균 N초/config" 기준으로 예상
+- 🔹 **현재 실행 중** config 이름과 경과 시간
+- ✅/❌ **최근 처리 목록** — 방금 끝난 주문들의 성공/실패
+- ⏹ **워커 정지** 버튼 — 지금 실행 중인 건 끝낸 뒤 깔끔하게 종료
+
+### 🚨 복구 기능
+
+컴퓨터가 갑자기 꺼졌다면 `running/`에 파일이 남아 있을 수 있어요. **[복구]** 버튼(또는 CLI의 `--recover`)을 쓰면 자동으로 `pending/`으로 되돌려 줘요.
+
+---
+
+## 📊 4. 결과 탭
+
+![결과 화면](docs/images/tab_results.png)
+
+실행이 끝나면 여기서 한눈에 볼 수 있어요:
+
+- 🔢 **총 Trial 개수**, **성공률**, **평균 점수**를 숫자 카드로 요약
+- 📋 각 trial별 점수를 **표**로 보기
+- 📥 **CSV 다운로드** — 엑셀이나 구글 스프레드시트에서 열 수 있음
+- 🗑 **결과 폴더 삭제** — 실수 방지 경고 있음
+
+### ⚠️ 검증 경고가 있을 때
+
+수집된 데이터에 이상이 있으면(예: 씬 파라미터가 기대와 다름) 테이블 아래에 **검증 경고** expander가 열려요. 어느 run의 어떤 체크가 실패했는지 펼쳐서 확인할 수 있어요.
+
+### 📁 결과 폴더 구조
 
 ```
 ~/aic_community_e2e/
 └── run_01_20260408_234406/
     ├── config.yaml
     ├── trial_1_score95/
-    │   ├── bag/          # rosbag
-    │   ├── episode/      # PNG + npy
-    │   ├── scoring.yaml
-    │   └── tags.json
+    │   ├── bag/          # ROS bag 로그
+    │   ├── episode/      # PNG 이미지 + numpy 배열
+    │   ├── scoring.yaml  # 점수
+    │   └── tags.json     # 씬 정보(메타데이터)
     ├── trial_2_score95/
     └── trial_3_score25/
 ```
 
-## 더 알아보기
+---
 
-- [사용 가이드](docs/usage-guide.md) — 단계별 사용법, Prefect 대시보드, 문제 해결
-- [Config Reference](docs/config-reference.md) — 모든 config 항목 설명
+## 📈 Prefect 대시보드로 자세히 보기
 
-## License
+내부적으로 **Prefect**라는 워크플로우 엔진을 써요. 실행 이력과 로그를 더 자세히 보고 싶으면 브라우저에서:
+
+```
+http://localhost:4200
+```
+
+### 메인 대시보드
+![Prefect 대시보드](docs/images/prefect_dashboard.png)
+
+### Runs — 지금까지의 모든 실행 목록
+![Runs](docs/images/prefect_runs.png)
+
+### Flow 상세 — 단계별 진행 상황과 걸린 시간
+![Flow Detail](docs/images/prefect_flow_detail.png)
+
+### Artifacts — 실행이 만들어낸 결과물 링크
+![Artifacts](docs/images/prefect_artifacts.png)
+![Artifact Detail](docs/images/prefect_artifact_detail.png)
+
+---
+
+## 💻 명령줄(CLI)에서 쓰기
+
+웹 화면 없이 터미널에서 바로 돌리고 싶을 때:
+
+### 큐 소비 워커 (권장)
+
+```bash
+# pending/의 모든 config를 cheatcode policy로 소비
+uv run aic-collector-worker --root configs/train --task all \
+    --policy cheatcode --output-root ~/aic_data
+
+# SFP만 5개, 주문서당 최대 5분(300초)까지만
+uv run aic-collector-worker --root configs/train --task sfp \
+    --limit 5 --timeout 300
+
+# 비정상 종료로 running/에 남은 파일 복구 후 실행
+uv run aic-collector-worker --root configs/train --recover
+
+# SFP는 내 policy, SC는 cheatcode로 분리 실행
+uv run aic-collector-worker --root configs/train \
+    --policy-sfp MyVisionPolicy --policy-sc cheatcode
+```
+
+### 단일 config 실행
+
+```bash
+uv run aic-prefect-run \
+    --engine-config configs/train/sfp/pending/config_sfp_0050.yaml \
+    --policy cheatcode --output-root ~/aic_data
+```
+
+---
+
+## 📚 더 알아보기
+
+- [사용 가이드](docs/usage-guide.md) — 단계별 사용법, 문제 해결 팁
+- [Config Reference](docs/config-reference.md) — YAML 파일의 모든 항목 설명
+- [AIC 공식 문서](https://github.com/intrinsic-dev/aic) — Task 구조와 파라미터 범위의 근거
+
+## 🙋 막히면 어떡하지?
+
+1. **환경 점검 탭**에서 빨간 X가 있는지 먼저 확인
+2. `/tmp/aic_worker_run.log` 로그 파일 열어 보기
+3. GitHub Issues에 질문 올리기
+
+## 📄 License
 
 Apache-2.0
