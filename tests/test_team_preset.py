@@ -617,6 +617,72 @@ def test_adjust_claim_count_updates_only_count_field(tmp_path: Path) -> None:
     }
 
 
+def test_adjust_claim_count_rejects_negative_entry_id(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    append_claim(
+        ledger_path,
+        member_id="alpha",
+        task_type="sfp",
+        base_seed=100,
+        start_index=0,
+        count=2,
+        strategy="uniform",
+        queue_root=tmp_path / "queue-a",
+        preset_hash="sha256:first",
+    )
+    append_claim(
+        ledger_path,
+        member_id="beta",
+        task_type="sfp",
+        base_seed=101,
+        start_index=10,
+        count=3,
+        strategy="uniform",
+        queue_root=tmp_path / "queue-b",
+        preset_hash="sha256:second",
+    )
+
+    with pytest.raises(PresetError, match="Invalid ledger entry id"):
+        adjust_claim_count(ledger_path, -1, 99)
+
+    ledger = _load_ledger(ledger_path)
+
+    assert [entry["count"] for entry in ledger["entries"]] == [2, 3]
+
+
+def test_rollback_claim_rejects_negative_entry_id(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    append_claim(
+        ledger_path,
+        member_id="alpha",
+        task_type="sfp",
+        base_seed=100,
+        start_index=0,
+        count=2,
+        strategy="uniform",
+        queue_root=tmp_path / "queue-a",
+        preset_hash="sha256:first",
+    )
+    append_claim(
+        ledger_path,
+        member_id="beta",
+        task_type="sfp",
+        base_seed=101,
+        start_index=10,
+        count=3,
+        strategy="uniform",
+        queue_root=tmp_path / "queue-b",
+        preset_hash="sha256:second",
+    )
+
+    with pytest.raises(PresetError, match="Invalid ledger entry id"):
+        rollback_claim(ledger_path, -1)
+
+    ledger = _load_ledger(ledger_path)
+
+    assert [entry["member_id"] for entry in ledger["entries"]] == ["alpha", "beta"]
+
+
 def test_concurrent_append_claims_preserve_all_entries(tmp_path: Path) -> None:
     ledger_path = tmp_path / "ledger.yaml"
     entry_ids: list[int] = []

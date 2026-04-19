@@ -114,6 +114,11 @@ def _lock_path(ledger_path: Path) -> Path:
     return ledger_path.with_suffix(f"{ledger_path.suffix}.lock")
 
 
+def _require_valid_entry_id(entries: list[dict[str, Any]], entry_id: int) -> None:
+    if entry_id < 0 or entry_id >= len(entries):
+        raise PresetError(f"Invalid ledger entry id: {entry_id}")
+
+
 def _locked_update_ledger(
     ledger_path: Path, updater: Any
 ) -> Any:
@@ -240,6 +245,7 @@ def append_claim(
 
 def rollback_claim(ledger_path: Path, entry_id: int) -> None:
     def updater(entries: list[dict[str, Any]]) -> None:
+        _require_valid_entry_id(entries, entry_id)
         if entry_id == len(entries) - 1:
             entries.pop()
         return None
@@ -249,6 +255,7 @@ def rollback_claim(ledger_path: Path, entry_id: int) -> None:
 
 def adjust_claim_count(ledger_path: Path, entry_id: int, actual_count: int) -> None:
     def updater(entries: list[dict[str, Any]]) -> None:
+        _require_valid_entry_id(entries, entry_id)
         entries[entry_id]["count"] = actual_count
         return None
 
