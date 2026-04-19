@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,9 +10,12 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from aic_collector.job_queue import QueueState, queue_dir
-from aic_collector.team_preset import TeamPreset
+from aic_collector.team_preset import PresetError, TeamPreset
 from aic_collector.webapp import (
     build_team_mode_state,
+    build_team_preview_scene_config,
+    build_validated_preset_ranges,
+    render_scene_svg,
     build_team_slot_summary,
     build_team_submit_preset,
 )
@@ -28,7 +32,14 @@ def _preset(
         shard_stride=shard_stride,
         index_width=index_width,
         strategy="uniform",
-        ranges={},
+        ranges={
+            "nic_translation": (-0.0215, 0.0234),
+            "nic_yaw": (-0.1745, 0.1745),
+            "sc_translation": (-0.06, 0.055),
+            "gripper_xy": 0.002,
+            "gripper_z": 0.002,
+            "gripper_rpy": 0.04,
+        },
         scene={
             "nic_count_range": [1, 1],
             "sc_count_range": [1, 1],
@@ -106,6 +117,121 @@ def test_build_team_submit_preset_overrides_runtime_sfp_count_only() -> None:
     assert submit_preset.tasks["sfp_default_count"] == 8
     assert submit_preset.tasks["sc_default_count"] == 0
     assert "sfp" not in preset.tasks
+
+
+def test_build_team_preview_scene_config_threads_fixed_target_into_collection() -> None:
+    preset = _preset()
+    preset = TeamPreset(
+        base_seed=preset.base_seed,
+        shard_stride=preset.shard_stride,
+        index_width=preset.index_width,
+        strategy=preset.strategy,
+        ranges=preset.ranges,
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+            "fixed_target": {"sfp": {"rail": 0, "port": "sfp_port_0"}},
+        },
+        tasks=preset.tasks,
+        members=preset.members,
+        preset_hash=preset.preset_hash,
+    )
+
+    cfg = build_team_preview_scene_config(preset)
+
+    assert cfg == {
+        "scene": {
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+        },
+        "collection": {
+            "fixed_target": {"sfp": {"rail": 0, "port": "sfp_port_0"}},
+        },
+        "ranges": {
+            "nic_translation": (-0.0215, 0.0234),
+            "nic_yaw": (-0.1745, 0.1745),
+            "sc_translation": (-0.06, 0.055),
+            "gripper_xy": 0.002,
+            "gripper_z": 0.002,
+            "gripper_rpy": 0.04,
+        },
+    }
+
+
+def test_build_validated_preset_ranges_rejects_out_of_bounds_or_reversed_values() -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=10,
+        index_width=5,
+        strategy="uniform",
+        ranges={
+            "nic_translation": (0.1, -0.1),
+            "nic_yaw": (-0.1745, 0.1745),
+            "sc_translation": (-0.06, 0.055),
+            "gripper_xy": 0.1,
+            "gripper_z": 0.002,
+            "gripper_rpy": 0.04,
+        },
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+        },
+        tasks={"sfp_default_count": 1, "sc_default_count": 0},
+        members=({"id": "m0", "name": "Member 0"},),
+        preset_hash="sha256:test",
+    )
+
+    with pytest.raises(PresetError, match="sampling.ranges.nic_translation"):
+        build_validated_preset_ranges(preset)
+
+
+def test_render_scene_svg_threads_fixed_target_to_sampler(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_sample_scenes(cfg: dict[str, object], task_type: str, sample_count: int, seed: int) -> list[object]:
+        seen["cfg"] = cfg
+        return [
+            SimpleNamespace(
+                sample_index=0,
+                trials=[
+                    SimpleNamespace(
+                        target_rail=0,
+                        target_port_name="sfp_port_0",
+                        nic_rails=[0],
+                        sc_rails=[0],
+                        task_type="sfp",
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr("aic_collector.sampler.sample_scenes", fake_sample_scenes)
+
+    svg = render_scene_svg(
+        nic_range=(1, 1),
+        sc_range=(1, 1),
+        target_cycling=False,
+        fixed_target={"sfp": {"rail": 0, "port": "sfp_port_0"}},
+        sample_count=1,
+    )
+
+    assert seen["cfg"] == {
+        "training": {
+            "scene": {
+                "nic_count_range": [1, 1],
+                "sc_count_range": [1, 1],
+                "target_cycling": False,
+            },
+            "collection": {
+                "fixed_target": {"sfp": {"rail": 0, "port": "sfp_port_0"}},
+            },
+            "ranges": {},
+        }
+    }
+    assert "rail 0, sfp_port_0" in svg
 
 
 def test_build_team_slot_summary_returns_none_without_active_team_state() -> None:

@@ -595,6 +595,7 @@ def render_scene_svg(
     sc_range: tuple[int, int],
     target_cycling: bool,
     ranges: dict | None = None,
+    fixed_target: dict[str, Any] | None = None,
     seed: int = 42,
     task_type: str = "sfp",
     sample_count: int = 3,
@@ -621,6 +622,8 @@ def render_scene_svg(
                 "ranges": ranges or {},
             }
         }
+        if fixed_target is not None:
+            cfg["training"]["collection"] = {"fixed_target": fixed_target}
         plans = sample_scenes(cfg, task_type, sample_count, seed)
     except Exception as e:
         return (
@@ -1074,21 +1077,95 @@ def _preset_scene_flag(preset: TeamPreset, key: str) -> bool:
     return value
 
 
-def _preset_range_pair(preset: TeamPreset, key: str) -> tuple[float, float]:
+def _preset_range_pair(
+    preset: TeamPreset,
+    key: str,
+    *,
+    minimum: float,
+    maximum: float,
+) -> tuple[float, float]:
     value = preset.ranges.get(key)
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise PresetError(f"Invalid preset range: sampling.ranges.{key}")
     lo, hi = value
     if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
         raise PresetError(f"Invalid preset range: sampling.ranges.{key}")
-    return float(lo), float(hi)
+    lo_value = float(lo)
+    hi_value = float(hi)
+    if lo_value > hi_value or lo_value < minimum or hi_value > maximum:
+        raise PresetError(f"Invalid preset range: sampling.ranges.{key}")
+    return lo_value, hi_value
 
 
-def _preset_range_spread(preset: TeamPreset, key: str) -> float:
+def _preset_range_spread(
+    preset: TeamPreset,
+    key: str,
+    *,
+    maximum: float,
+) -> float:
     value = preset.ranges.get(key)
     if not isinstance(value, (int, float)):
         raise PresetError(f"Invalid preset spread: sampling.ranges.{key}")
-    return float(value)
+    spread = float(value)
+    if spread < 0.0 or spread > maximum:
+        raise PresetError(f"Invalid preset spread: sampling.ranges.{key}")
+    return spread
+
+
+def build_validated_preset_ranges(preset: TeamPreset) -> dict[str, Any]:
+    return {
+        "nic_translation": _preset_range_pair(
+            preset,
+            "nic_translation",
+            minimum=-0.0215,
+            maximum=0.0234,
+        ),
+        "nic_yaw": _preset_range_pair(
+            preset,
+            "nic_yaw",
+            minimum=-0.1745,
+            maximum=0.1745,
+        ),
+        "sc_translation": _preset_range_pair(
+            preset,
+            "sc_translation",
+            minimum=-0.06,
+            maximum=0.055,
+        ),
+        "gripper_xy": _preset_range_spread(
+            preset,
+            "gripper_xy",
+            maximum=0.002,
+        ),
+        "gripper_z": _preset_range_spread(
+            preset,
+            "gripper_z",
+            maximum=0.002,
+        ),
+        "gripper_rpy": _preset_range_spread(
+            preset,
+            "gripper_rpy",
+            maximum=0.04,
+        ),
+    }
+
+
+def build_team_preview_scene_config(preset: TeamPreset) -> dict[str, Any]:
+    scene_cfg = {
+        "nic_count_range": list(_preset_scene_count_range(preset, "nic_count_range", allowed_min=1, allowed_max=5)),
+        "sc_count_range": list(_preset_scene_count_range(preset, "sc_count_range", allowed_min=1, allowed_max=2)),
+        "target_cycling": _preset_scene_flag(preset, "target_cycling"),
+    }
+    preview_cfg: dict[str, Any] = {
+        "scene": scene_cfg,
+        "ranges": dict(build_validated_preset_ranges(preset)),
+    }
+    fixed_target = preset.scene.get("fixed_target")
+    if fixed_target is not None:
+        if not isinstance(fixed_target, dict):
+            raise PresetError("Invalid preset fixed_target: scene.fixed_target")
+        preview_cfg["collection"] = {"fixed_target": dict(fixed_target)}
+    return preview_cfg
 
 
 def build_team_mode_state(
@@ -1322,6 +1399,7 @@ if st is not None:
     
         team_mode_active = team_preset is not None and team_mode_error is None
         team_state: dict[str, Any] | None = None
+        team_preview_scene_cfg: dict[str, Any] | None = None
         team_member_options: list[str] = []
         team_member_lookup: dict[str, dict[str, str]] = {}
         mgr_team_member_id: str | None = None
@@ -1342,6 +1420,8 @@ if st is not None:
                 mgr_team_member_id = str(st.session_state["mgr_team_member"])
                 try:
                     mgr_team_sc_default_count = _preset_task_count(team_preset, "sc_default_count")
+                    validated_preset_ranges = build_validated_preset_ranges(team_preset)
+                    team_preview_scene_cfg = build_team_preview_scene_config(team_preset)
                     team_state = build_team_mode_state(
                         team_preset,
                         queue_root=mgr_queue_root,
@@ -1373,15 +1453,9 @@ if st is not None:
                     st.session_state["mgr_sc_count"] = mgr_team_sc_default_count
                     st.session_state["mgr_sfp_count"] = int(team_state["selected_sfp_count"])
                     for range_key in ("nic_translation", "nic_yaw", "sc_translation"):
-                        st.session_state[f"mgr_range_{range_key}_range"] = _preset_range_pair(
-                            team_preset,
-                            range_key,
-                        )
+                        st.session_state[f"mgr_range_{range_key}_range"] = validated_preset_ranges[range_key]
                     for range_key in ("gripper_xy", "gripper_z", "gripper_rpy"):
-                        st.session_state[f"mgr_range_{range_key}_spread"] = _preset_range_spread(
-                            team_preset,
-                            range_key,
-                        )
+                        st.session_state[f"mgr_range_{range_key}_spread"] = validated_preset_ranges[range_key]
                 except PresetError as exc:
                     team_mode_error = exc
                     st.error(f"팀 preset 적용 실패: {team_mode_error}")
@@ -1572,11 +1646,15 @@ if st is not None:
             # 시각 다이어그램 — 현재 Scene 설정으로 샘플 3개 생성해 실제 조합을 보여줌
             # ranges는 pose 값이라 다이어그램에 무관하므로 기본값으로 생성.
             # st.markdown(unsafe_allow_html)은 SVG를 살균 → components.v1.html 사용.
+            preview_fixed_target = None
+            if team_widgets_locked and team_preview_scene_cfg is not None:
+                preview_fixed_target = team_preview_scene_cfg.get("collection", {}).get("fixed_target")
             _scene_svg = render_scene_svg(
                 nic_range=tuple(mgr_nic_count_range),
                 sc_range=tuple(mgr_sc_count_range),
                 target_cycling=bool(mgr_target_cycling),
                 ranges=None,  # pose 값은 시각에 영향 없음 → 기본값
+                fixed_target=preview_fixed_target,
                 seed=int(st.session_state.get("mgr_seed", 42)),
                 task_type="sfp",
                 sample_count=3,
