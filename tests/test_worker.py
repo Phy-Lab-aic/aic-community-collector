@@ -124,7 +124,7 @@ def test_mark_done_conflict_raises() -> None:
         ensure_queue_dirs(root)
         _seed_queue(root, sfp_count=1)
         # 같은 이름 파일을 done/에 미리 둠
-        (queue_dir(root, "sfp", QueueState.DONE) / "config_sfp_0000.yaml").write_text("x")
+        (queue_dir(root, "sfp", QueueState.DONE) / "config_sfp_000000.yaml").write_text("x")
         claim = claim_one(root, ["sfp"])
         assert claim is not None
         try:
