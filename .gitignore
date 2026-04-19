@@ -5,6 +5,8 @@ dist/
 *.egg-info/
 
 # local/runtime
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/commands/
 .tmp/
 configs/train/
