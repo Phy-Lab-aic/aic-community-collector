@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 import re
+import subprocess
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
@@ -42,6 +47,85 @@ def _canonical_hash(data: dict[str, Any]) -> str:
     canonical = json.dumps(data, sort_keys=True, default=str, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return f"sha256:{digest}"
+
+
+def _ledger_entries(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise PresetError(f"Malformed ledger YAML: {path}") from exc
+
+    if raw is None:
+        return []
+    if not isinstance(raw, dict) or "entries" not in raw or not isinstance(raw["entries"], list):
+        raise PresetError(f"Invalid ledger YAML shape: {path}")
+
+    entries: list[dict[str, Any]] = []
+    for entry in raw["entries"]:
+        if not isinstance(entry, dict):
+            raise PresetError(f"Invalid ledger entry in: {path}")
+        entries.append(dict(entry))
+    return entries
+
+
+def _atomic_rewrite(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as handle:
+        yaml.safe_dump(payload, handle, sort_keys=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temp_path = Path(handle.name)
+    os.replace(temp_path, path)
+
+
+def _iso_utc_now() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _git_sha() -> str:
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return "uncommitted"
+
+    return f"dirty:{sha}" if status else sha
+
+
+def _lock_path(ledger_path: Path) -> Path:
+    return ledger_path.with_suffix(f"{ledger_path.suffix}.lock")
+
+
+def _locked_update_ledger(
+    ledger_path: Path, updater: Any
+) -> Any:
+    lock_path = _lock_path(ledger_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        entries = _ledger_entries(ledger_path)
+        result = updater(entries)
+        _atomic_rewrite(ledger_path, {"entries": entries})
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        return result
 
 
 def _require_path(data: dict[str, Any], path: str) -> Any:
@@ -119,6 +203,56 @@ def _member_index(preset: TeamPreset, member_id: str) -> int:
         if member.get("id") == member_id:
             return index
     raise KeyError(member_id)
+
+
+def append_claim(
+    ledger_path: Path,
+    *,
+    member_id: str,
+    task_type: str,
+    base_seed: int,
+    start_index: int,
+    count: int,
+    strategy: str,
+    queue_root: Path,
+    preset_hash: str,
+) -> int:
+    def updater(entries: list[dict[str, Any]]) -> int:
+        entry_id = len(entries)
+        entries.append(
+            {
+                "member_id": member_id,
+                "task_type": task_type,
+                "base_seed": base_seed,
+                "start_index": start_index,
+                "count": count,
+                "strategy": strategy,
+                "queue_root": str(queue_root),
+                "preset_hash": preset_hash,
+                "git_sha": _git_sha(),
+                "created_at": _iso_utc_now(),
+            }
+        )
+        return entry_id
+
+    return _locked_update_ledger(ledger_path, updater)
+
+
+def rollback_claim(ledger_path: Path, entry_id: int) -> None:
+    def updater(entries: list[dict[str, Any]]) -> None:
+        if entry_id == len(entries) - 1:
+            entries.pop()
+        return None
+
+    _locked_update_ledger(ledger_path, updater)
+
+
+def adjust_claim_count(ledger_path: Path, entry_id: int, actual_count: int) -> None:
+    def updater(entries: list[dict[str, Any]]) -> None:
+        entries[entry_id]["count"] = actual_count
+        return None
+
+    _locked_update_ledger(ledger_path, updater)
 
 
 def slot_range(preset: TeamPreset, member_id: str) -> tuple[int, int]:

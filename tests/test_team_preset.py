@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import re
 import sys
+import threading
 from pathlib import Path
+from unittest.mock import ANY
 
 import pytest
+import yaml
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
@@ -14,8 +17,11 @@ from aic_collector.team_preset import (
     PresetError,
     SlotExhausted,
     TeamPreset,
+    adjust_claim_count,
+    append_claim,
     load_preset,
     next_start_index_in_slot,
+    rollback_claim,
     slot_range,
 )
 
@@ -23,6 +29,10 @@ from aic_collector.team_preset import (
 def _write_preset(path: Path, content: str) -> Path:
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _load_ledger(path: Path) -> dict[str, object]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def test_load_preset_happy_path(tmp_path: Path) -> None:
@@ -476,3 +486,167 @@ def test_next_start_index_in_slot_raises_when_slot_is_full(tmp_path: Path) -> No
 
     with pytest.raises(SlotExhausted, match="beta"):
         next_start_index_in_slot(preset, "beta", tmp_path, "sfp")
+
+
+def test_append_claim_writes_one_entry_with_required_fields(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+
+    entry_id = append_claim(
+        ledger_path,
+        member_id="alpha",
+        task_type="sfp",
+        base_seed=100,
+        start_index=17,
+        count=4,
+        strategy="uniform",
+        queue_root=tmp_path / "queue",
+        preset_hash="sha256:preset",
+    )
+
+    ledger = _load_ledger(ledger_path)
+
+    assert entry_id == 0
+    assert ledger["entries"] == [
+        {
+            "member_id": "alpha",
+            "task_type": "sfp",
+            "base_seed": 100,
+            "start_index": 17,
+            "count": 4,
+            "strategy": "uniform",
+            "queue_root": str(tmp_path / "queue"),
+            "preset_hash": "sha256:preset",
+            "git_sha": ANY,
+            "created_at": ANY,
+        }
+    ]
+    assert isinstance(ledger["entries"][0]["git_sha"], str)
+    assert ledger["entries"][0]["created_at"].endswith("Z")
+
+
+def test_second_append_gets_next_id_and_preserves_existing_entries(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+
+    first_id = append_claim(
+        ledger_path,
+        member_id="alpha",
+        task_type="sfp",
+        base_seed=100,
+        start_index=0,
+        count=2,
+        strategy="uniform",
+        queue_root=tmp_path / "queue-a",
+        preset_hash="sha256:first",
+    )
+    second_id = append_claim(
+        ledger_path,
+        member_id="beta",
+        task_type="sc",
+        base_seed=200,
+        start_index=10,
+        count=3,
+        strategy="lhs",
+        queue_root=tmp_path / "queue-b",
+        preset_hash="sha256:second",
+    )
+
+    ledger = _load_ledger(ledger_path)
+
+    assert first_id == 0
+    assert second_id == 1
+    assert [entry["member_id"] for entry in ledger["entries"]] == ["alpha", "beta"]
+    assert [entry["start_index"] for entry in ledger["entries"]] == [0, 10]
+
+
+def test_rollback_claim_removes_only_the_last_entry(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    append_claim(
+        ledger_path,
+        member_id="alpha",
+        task_type="sfp",
+        base_seed=100,
+        start_index=0,
+        count=2,
+        strategy="uniform",
+        queue_root=tmp_path / "queue-a",
+        preset_hash="sha256:first",
+    )
+    append_claim(
+        ledger_path,
+        member_id="beta",
+        task_type="sc",
+        base_seed=200,
+        start_index=10,
+        count=3,
+        strategy="lhs",
+        queue_root=tmp_path / "queue-b",
+        preset_hash="sha256:second",
+    )
+
+    rollback_claim(ledger_path, 0)
+    after_noop = _load_ledger(ledger_path)
+    rollback_claim(ledger_path, 1)
+    after_pop = _load_ledger(ledger_path)
+
+    assert [entry["member_id"] for entry in after_noop["entries"]] == ["alpha", "beta"]
+    assert [entry["member_id"] for entry in after_pop["entries"]] == ["alpha"]
+
+
+def test_adjust_claim_count_updates_only_count_field(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    entry_id = append_claim(
+        ledger_path,
+        member_id="alpha",
+        task_type="sfp",
+        base_seed=100,
+        start_index=17,
+        count=4,
+        strategy="uniform",
+        queue_root=tmp_path / "queue",
+        preset_hash="sha256:preset",
+    )
+    before = _load_ledger(ledger_path)["entries"][0].copy()
+
+    adjust_claim_count(ledger_path, entry_id, 9)
+
+    after = _load_ledger(ledger_path)["entries"][0]
+
+    assert after["count"] == 9
+    assert {key: value for key, value in after.items() if key != "count"} == {
+        key: value for key, value in before.items() if key != "count"
+    }
+
+
+def test_concurrent_append_claims_preserve_all_entries(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    entry_ids: list[int] = []
+    lock = threading.Lock()
+
+    def append_for(index: int) -> None:
+        entry_id = append_claim(
+            ledger_path,
+            member_id=f"member-{index}",
+            task_type="sfp",
+            base_seed=100 + index,
+            start_index=index * 10,
+            count=index + 1,
+            strategy="uniform",
+            queue_root=tmp_path / f"queue-{index}",
+            preset_hash=f"sha256:{index}",
+        )
+        with lock:
+            entry_ids.append(entry_id)
+
+    threads = [threading.Thread(target=append_for, args=(index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    ledger = _load_ledger(ledger_path)
+
+    assert sorted(entry_ids) == list(range(8))
+    assert len(ledger["entries"]) == 8
+    assert sorted(entry["member_id"] for entry in ledger["entries"]) == [
+        f"member-{index}" for index in range(8)
+    ]
