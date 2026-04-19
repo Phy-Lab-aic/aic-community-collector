@@ -1088,7 +1088,12 @@ def _preset_range_pair(
     if not isinstance(value, (list, tuple)) or len(value) != 2:
         raise PresetError(f"Invalid preset range: sampling.ranges.{key}")
     lo, hi = value
-    if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+    if (
+        isinstance(lo, bool)
+        or isinstance(hi, bool)
+        or not isinstance(lo, (int, float))
+        or not isinstance(hi, (int, float))
+    ):
         raise PresetError(f"Invalid preset range: sampling.ranges.{key}")
     lo_value = float(lo)
     hi_value = float(hi)
@@ -1104,12 +1109,44 @@ def _preset_range_spread(
     maximum: float,
 ) -> float:
     value = preset.ranges.get(key)
-    if not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PresetError(f"Invalid preset spread: sampling.ranges.{key}")
     spread = float(value)
     if spread < 0.0 or spread > maximum:
         raise PresetError(f"Invalid preset spread: sampling.ranges.{key}")
     return spread
+
+
+def _validated_fixed_target_map(preset: TeamPreset) -> dict[str, dict[str, Any] | None] | None:
+    fixed_target = preset.scene.get("fixed_target")
+    if fixed_target is None:
+        return None
+    if not isinstance(fixed_target, dict):
+        raise PresetError("Invalid preset fixed_target: scene.fixed_target")
+
+    validated: dict[str, dict[str, Any] | None] = {}
+    for task_type, payload in fixed_target.items():
+        field_path = f"scene.fixed_target.{task_type}"
+        if payload is None:
+            validated[str(task_type)] = None
+            continue
+        if not isinstance(payload, dict):
+            raise PresetError(f"Invalid preset fixed_target: {field_path}")
+        if "rail" not in payload or "port" not in payload:
+            raise PresetError(f"Invalid preset fixed_target: {field_path}")
+
+        rail = payload["rail"]
+        port = payload["port"]
+        if isinstance(rail, bool) or not isinstance(rail, int):
+            raise PresetError(f"Invalid preset fixed_target: {field_path}")
+        if port is None:
+            raise PresetError(f"Invalid preset fixed_target: {field_path}")
+
+        validated[str(task_type)] = {
+            "rail": int(rail),
+            "port": str(port),
+        }
+    return validated
 
 
 def build_validated_preset_ranges(preset: TeamPreset) -> dict[str, Any]:
@@ -1160,11 +1197,9 @@ def build_team_preview_scene_config(preset: TeamPreset) -> dict[str, Any]:
         "scene": scene_cfg,
         "ranges": dict(build_validated_preset_ranges(preset)),
     }
-    fixed_target = preset.scene.get("fixed_target")
+    fixed_target = _validated_fixed_target_map(preset)
     if fixed_target is not None:
-        if not isinstance(fixed_target, dict):
-            raise PresetError("Invalid preset fixed_target: scene.fixed_target")
-        preview_cfg["collection"] = {"fixed_target": dict(fixed_target)}
+        preview_cfg["collection"] = {"fixed_target": fixed_target}
     return preview_cfg
 
 

@@ -188,6 +188,87 @@ def test_build_validated_preset_ranges_rejects_out_of_bounds_or_reversed_values(
         build_validated_preset_ranges(preset)
 
 
+def test_build_validated_preset_ranges_rejects_yaml_boolean_pair_value() -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=10,
+        index_width=5,
+        strategy="uniform",
+        ranges={
+            "nic_translation": (False, 0.0234),
+            "nic_yaw": (-0.1745, 0.1745),
+            "sc_translation": (-0.06, 0.055),
+            "gripper_xy": 0.002,
+            "gripper_z": 0.002,
+            "gripper_rpy": 0.04,
+        },
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+        },
+        tasks={"sfp_default_count": 1, "sc_default_count": 0},
+        members=({"id": "m0", "name": "Member 0"},),
+        preset_hash="sha256:test",
+    )
+
+    with pytest.raises(PresetError, match="sampling.ranges.nic_translation"):
+        build_validated_preset_ranges(preset)
+
+
+def test_build_validated_preset_ranges_rejects_yaml_boolean_spread_value() -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=10,
+        index_width=5,
+        strategy="uniform",
+        ranges={
+            "nic_translation": (-0.0215, 0.0234),
+            "nic_yaw": (-0.1745, 0.1745),
+            "sc_translation": (-0.06, 0.055),
+            "gripper_xy": True,
+            "gripper_z": 0.002,
+            "gripper_rpy": 0.04,
+        },
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+        },
+        tasks={"sfp_default_count": 1, "sc_default_count": 0},
+        members=({"id": "m0", "name": "Member 0"},),
+        preset_hash="sha256:test",
+    )
+
+    with pytest.raises(PresetError, match="sampling.ranges.gripper_xy"):
+        build_validated_preset_ranges(preset)
+
+
+def test_build_team_preview_scene_config_rejects_malformed_fixed_target_entries() -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=10,
+        index_width=5,
+        strategy="uniform",
+        ranges=_preset().ranges,
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+            "fixed_target": {
+                "sfp": {"rail": True, "port": "sfp_port_0"},
+                "sc": "bad-shape",
+            },
+        },
+        tasks={"sfp_default_count": 1, "sc_default_count": 0},
+        members=({"id": "m0", "name": "Member 0"},),
+        preset_hash="sha256:test",
+    )
+
+    with pytest.raises(PresetError, match="scene.fixed_target.sfp"):
+        build_team_preview_scene_config(preset)
+
+
 def test_render_scene_svg_threads_fixed_target_to_sampler(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
