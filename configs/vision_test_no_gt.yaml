@@ -1,0 +1,36 @@
+# Same as vision_test.yaml but with ground_truth=false (submission mode)
+schema_version: "0.1"
+
+collection:
+  runs: 1
+  trials: [1, 2, 3]
+  output_root: ~/aic_vision_test_no_gt
+  seed: 42
+  collect_episode: false
+
+policy:
+  default: VisionCheatCode
+
+parameters:
+  nic0_translation: { min: -0.001, max: 0.001 }
+  nic0_yaw:         { min: -0.001, max: 0.001 }
+  nic1_translation: { min: -0.001, max: 0.001 }
+  nic1_yaw:         { min: -0.001, max: 0.001 }
+  sc0_translation:  { min: -0.001, max: 0.001 }
+  sc0_yaw:          { min: -0.001, max: 0.001 }
+  sc1_translation:  { min: -0.001, max: 0.001 }
+  sc1_yaw:          { min: -0.001, max: 0.001 }
+
+sampling:
+  strategy: uniform
+
+tags:
+  schema_version: "0.0.0"
+  auto:
+    success_from_scoring: true
+    cable_type_from_metadata: true
+
+engine:
+  ground_truth: false  # ← submission-like mode
+  use_compressed: true
+  template: configs/community_random_config.yaml

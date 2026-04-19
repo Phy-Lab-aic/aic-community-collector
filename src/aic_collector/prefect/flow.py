@@ -18,8 +18,7 @@ from aic_collector.sampler import sample_parameters
 
 from .policy_env import POLICY_CLASS, build_policy_env, deploy_policies
 from .shell_runner import (
-    kill_process_tree,
-    pkill_pattern,
+    graceful_cleanup,
     run_process_background,
     run_process_until_log_match,
     run_shell_process,
@@ -336,15 +335,23 @@ def cleanup_task(
     engine_handle: dict | None,
     republish_pids: list[int],
 ) -> None:
-    """프로세스 정리 (republish → policy → engine)."""
+    """프로세스 정리 — 일괄 SIGTERM + 공용 grace 윈도우 (polling).
+
+    기존엔 대상마다 `SIGTERM→sleep 3s→SIGKILL`를 순차 수행해 총 ~15s 소요.
+    지금은 모든 대상에 TERM을 한 번에 보내고 단일 3s 윈도우에서 polling →
+    대부분 ~0.2–1s에 끝남, 최악 3s.
+    """
     with _task_timer("cleanup-run"):
-        for pid in republish_pids:
-            kill_process_tree(pid)
-
-        pkill_pattern("aic_model")
-
+        pids: list[int] = [p for p in republish_pids if p and p > 0]
         if engine_handle and engine_handle.get("pid", -1) > 0:
-            kill_process_tree(engine_handle["pid"], grace_sec=3)
+            pids.append(engine_handle["pid"])
+
+        graceful_cleanup(
+            pids=pids,
+            patterns=["aic_model"],
+            grace_sec=3.0,
+            poll_interval=0.1,
+        )
 
 
 def _build_run_summary_markdown(
@@ -359,15 +366,30 @@ def _build_run_summary_markdown(
     run_name = Path(run_dir).name
     status = "✅ 성공" if success else "❌ 실패"
 
-    # trial별 점수 스캔
+    # trial별 점수 스캔 — legacy(trial_*_score*) 우선, 없으면 flat(tags.json)
     trial_rows = []
     if success:
-        for trial_dir in sorted(Path(run_dir).glob("trial_*_score*")):
-            m = re.match(r"trial_(\d+)_score(\d+)", trial_dir.name)
-            if m:
-                trial_num = m.group(1)
-                score = m.group(2)
-                trial_rows.append(f"| trial_{trial_num} | {score} |")
+        run_path = Path(run_dir)
+        trial_dirs = sorted(run_path.glob("trial_*_score*"))
+        if trial_dirs:
+            for trial_dir in trial_dirs:
+                m = re.match(r"trial_(\d+)_score(\d+)", trial_dir.name)
+                if m:
+                    trial_num = m.group(1)
+                    score = m.group(2)
+                    trial_rows.append(f"| trial_{trial_num} | {score} |")
+        else:
+            # flat 구조: run_dir/tags.json
+            tags_path = run_path / "tags.json"
+            if tags_path.exists():
+                try:
+                    tags = json.loads(tags_path.read_text())
+                    trial_num = tags.get("trial", "?")
+                    score_val = (tags.get("scoring") or {}).get("total")
+                    score = round(score_val) if isinstance(score_val, (int, float)) else "?"
+                    trial_rows.append(f"| trial_{trial_num} | {score} |")
+                except Exception:
+                    pass
 
     params_rows = "\n".join(
         f"| `{k}` | {v:.4f} |" for k, v in sorted(params.items())
@@ -442,12 +464,23 @@ def _validate_run_dir(run_dir: Path, collect_episode: bool = False) -> dict:
     _check("policy.txt", (run_dir / "policy.txt").exists(), "policy 메타 없음")
     _check("seed.txt", (run_dir / "seed.txt").exists(), "seed 메타 없음")
 
-    # 3. trial 디렉토리
+    # 3. trial 디렉토리 (레거시) 또는 flat 구조
     trial_dirs = sorted(run_dir.glob("trial_*_score*"))
-    _check("trial 디렉토리 ≥ 1개", len(trial_dirs) > 0, "trial 디렉토리 없음")
+    if trial_dirs:
+        _check("trial 디렉토리 ≥ 1개", True, None)
+    else:
+        # flat 구조: tags.json이 run_dir 바로 아래
+        flat_ok = (run_dir / "tags.json").exists()
+        _check(
+            "tags.json (flat) 또는 trial 디렉토리",
+            flat_ok,
+            "trial 디렉토리도 없고 run_dir/tags.json도 없음",
+        )
+        if flat_ok:
+            trial_dirs = [run_dir]  # 이하 로직 재사용
 
     for td in trial_dirs:
-        prefix = td.name
+        prefix = td.name if td != run_dir else "(flat)"
 
         # bag 존재
         bag_dir = td / "bag"
@@ -495,8 +528,9 @@ def _validate_run_dir(run_dir: Path, collect_episode: bool = False) -> dict:
                     f"{prefix}: metadata.json 없음",
                 )
 
-        # scoring/tags
-        _check(f"{prefix}/scoring.yaml", (td / "scoring.yaml").exists(), f"{prefix}: scoring.yaml 없음")
+        # scoring/tags (flat 모드에서는 trial scoring 파일명이 trial_scoring.yaml)
+        scoring_fn = "trial_scoring.yaml" if td == run_dir else "scoring.yaml"
+        _check(f"{prefix}/{scoring_fn}", (td / scoring_fn).exists(), f"{prefix}: {scoring_fn} 없음")
         _check(f"{prefix}/tags.json", (td / "tags.json").exists(), f"{prefix}: tags.json 없음")
 
     passed = sum(1 for c in checks if c["passed"])
@@ -541,6 +575,7 @@ def postprocess_task(
     policy: str,
     seed: int,
     params: dict[str, float],
+    flatten: bool = False,
 ) -> dict:
     """run 산출물 재편."""
     with _task_timer("postprocess"):
@@ -548,7 +583,7 @@ def postprocess_task(
             print(f"[error] {ENGINE_RESULTS} 없음 — 엔진/policy 실행 실패")
             return {"success": False, "run_dir": run_dir}
 
-        print(f"[postprocess] {run_dir} 로 재편...")
+        print(f"[postprocess] {run_dir} 로 재편... (flatten={flatten})")
         params_json_path = Path(f"/tmp/e2e_params_{Path(run_dir).name}.json")
         params_json_path.write_text(json.dumps(params))
 
@@ -560,6 +595,7 @@ def postprocess_task(
             policy=policy,
             seed=seed,
             parameters=params,
+            flatten=flatten,
         )
 
         params_json_path.unlink(missing_ok=True)
@@ -804,3 +840,129 @@ def collect_e2e_flow(
         "elapsed_sec": elapsed,
         "output_root": output_root,
     }
+
+
+# ---------------------------------------------------------------------------
+# Prebuilt engine config 실행 (Phase 2b 큐 consumer용)
+# ---------------------------------------------------------------------------
+#
+# 이미 생성된 엔진 config(YAML) 파일을 받아 1회 실행. build_engine_config_task
+# 단계를 생략한다는 점을 제외하면 run_one과 동일한 단계 구성. pending/에서
+# claim한 파일을 이 함수로 소비한다.
+
+
+def _queue_consume_run_name() -> str:
+    """flow_run_name — engine_cfg_path의 파일 stem으로 run 라벨 생성.
+
+    예: `config_sfp_0005.yaml` → `config_sfp_0005`. Prefect UI에서 어떤
+    config가 실행됐는지 한눈에 구분 가능.
+    """
+    try:
+        from prefect.runtime import flow_run as _fr
+        params = _fr.parameters or {}
+        p = params.get("engine_cfg_path") or ""
+        if p:
+            return Path(p).stem
+    except Exception:
+        pass
+    return "queue-consume"
+
+
+@flow(
+    name="aic-queue-consume",
+    flow_run_name=_queue_consume_run_name,
+    log_prints=True,
+)
+def run_prebuilt_engine_config(
+    engine_cfg_path: str,
+    run_tag: str,
+    run_idx: int = 1,
+    total_runs: int = 1,
+    policy_default: str = "cheatcode",
+    per_trial: dict | None = None,
+    act_model_path: str | None = None,
+    ground_truth: bool = True,
+    use_compressed: bool = False,
+    collect_episode: bool = False,
+    output_root: str = "~/aic_community_e2e",
+) -> dict:
+    """이미 생성된 엔진 config 파일로 1 run 실행 (큐 소비용).
+
+    Args:
+        engine_cfg_path: 소비할 엔진 config 경로 (큐의 running/에서 claim된 파일)
+        run_tag: 출력 run_dir 이름에 들어갈 태그 (타임스탬프 권장)
+        policy_default/per_trial/act_model_path: policy 구성
+        ground_truth/use_compressed/collect_episode: engine/수집 옵션
+        output_root: run_dir 루트 (~/aic_community_e2e 등)
+
+    Returns:
+        postprocess 결과 dict (success 포함). validation도 포함될 수 있음.
+    """
+    output_root = os.path.expanduser(output_root)
+    # 큐 모드: run_idx는 항상 1이므로 prefix 없이 run_tag만 사용.
+    # run_tag는 consumer_cli에서 "{timestamp}_{task}_{NNNN}" 형식으로 생성됨.
+    run_name = f"run_{run_tag}"
+    run_dir = f"{output_root}/{run_name}"
+    demo_dir = f"/tmp/e2e_demos_{run_tag}_run{run_idx}"
+
+    print()
+    print("=" * 60)
+    print(f"  RUN {run_idx}/{total_runs}  →  {run_dir}")
+    print(f"  engine_config: {engine_cfg_path}")
+    print("=" * 60)
+    _append_log(f"RUN {run_idx}/{total_runs} (prebuilt)")
+    _write_progress(run_idx - 1, total_runs, f"RUN {run_idx}/{total_runs}")
+
+    shutil.rmtree(demo_dir, ignore_errors=True)
+    Path(demo_dir).mkdir(parents=True)
+    Path(run_dir).mkdir(parents=True, exist_ok=True)
+
+    # trial 수 추정 (policy timeout 계산용)
+    try:
+        with open(engine_cfg_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        trials_count = len(cfg.get("trials", {}) or {}) or 1
+    except Exception:
+        trials_count = 1
+
+    # 1. 컨테이너 재시작
+    restart_docker_task()
+
+    # 2. 엔진 기동
+    engine_handle = None
+    republish_pids: list[int] = []
+
+    try:
+        engine_handle = launch_engine_task(engine_cfg_path, ground_truth, run_tag, run_idx)
+        republish_pids = launch_republish_task(use_compressed, run_tag, run_idx)
+        policy_env = build_policy_env(policy_default, per_trial, act_model_path)
+        policy_timeout = trials_count * 200 + 60
+        run_policy_task(
+            policy_env, demo_dir, run_tag, run_idx,
+            policy_timeout=policy_timeout, collect_episode=collect_episode,
+        )
+    finally:
+        cleanup_task(engine_handle, republish_pids)
+
+    # 3. 후처리 — sample/seed는 큐 consumer에는 없으므로 0/빈값.
+    # flatten=True로 trial 래퍼 없이 run_dir 바로 아래에 bag/episode/tags.json 배치.
+    result = postprocess_task(
+        run_dir, demo_dir, engine_cfg_path, policy_default, 0, {}, flatten=True
+    )
+
+    validation = None
+    if result.get("success"):
+        validation = validate_run_task(run_dir, collect_episode=collect_episode)
+        result["validation"] = validation
+
+    _emit_run_artifact(
+        run_dir=run_dir,
+        policy=policy_default,
+        seed=0,
+        params={},
+        success=result.get("success", False),
+        validation=validation,
+    )
+
+    shutil.rmtree(demo_dir, ignore_errors=True)
+    return result

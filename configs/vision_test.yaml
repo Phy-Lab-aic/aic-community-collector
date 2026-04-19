@@ -1,0 +1,37 @@
+# 비전 모듈 테스트 config — 1 run, 3 trials, static
+schema_version: "0.1"
+
+collection:
+  runs: 1
+  trials: [1, 2, 3]
+  output_root: ~/aic_vision_test
+  seed: 42
+  collect_episode: false
+
+policy:
+  default: VisionCheatCode
+
+parameters:
+  # 최소 랜덤화 (거의 고정, sampler 에러 방지)
+  nic0_translation: { min: -0.001, max: 0.001 }
+  nic0_yaw:         { min: -0.001, max: 0.001 }
+  nic1_translation: { min: -0.001, max: 0.001 }
+  nic1_yaw:         { min: -0.001, max: 0.001 }
+  sc0_translation:  { min: -0.001, max: 0.001 }
+  sc0_yaw:          { min: -0.001, max: 0.001 }
+  sc1_translation:  { min: -0.001, max: 0.001 }
+  sc1_yaw:          { min: -0.001, max: 0.001 }
+
+sampling:
+  strategy: uniform
+
+tags:
+  schema_version: "0.0.0"
+  auto:
+    success_from_scoring: true
+    cable_type_from_metadata: true
+
+engine:
+  ground_truth: true              # ground truth도 켜서 scoring 비교
+  use_compressed: true
+  template: configs/community_random_config.yaml

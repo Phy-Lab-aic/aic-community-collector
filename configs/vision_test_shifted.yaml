@@ -1,0 +1,38 @@
+# Generalization test — board poses shifted OUTSIDE training distribution
+# Training board_poses: (0.15, -0.2, 3.14) and (0.17, 0.0, 3.0) only
+# Shifted board_poses: trial_1 (0.18, -0.25, 3.2), trial_2 (0.12, -0.17, 3.08), trial_3 (0.15, 0.03, 2.9)
+schema_version: "0.1"
+
+collection:
+  runs: 1
+  trials: [1, 2, 3]
+  output_root: ~/aic_vision_test_shifted
+  seed: 42
+  collect_episode: false
+
+policy:
+  default: VisionCheatCode
+
+parameters:
+  nic0_translation: { min: -0.001, max: 0.001 }
+  nic0_yaw:         { min: -0.001, max: 0.001 }
+  nic1_translation: { min: -0.001, max: 0.001 }
+  nic1_yaw:         { min: -0.001, max: 0.001 }
+  sc0_translation:  { min: -0.001, max: 0.001 }
+  sc0_yaw:          { min: -0.001, max: 0.001 }
+  sc1_translation:  { min: -0.001, max: 0.001 }
+  sc1_yaw:          { min: -0.001, max: 0.001 }
+
+sampling:
+  strategy: uniform
+
+tags:
+  schema_version: "0.0.0"
+  auto:
+    success_from_scoring: true
+    cable_type_from_metadata: true
+
+engine:
+  ground_truth: true
+  use_compressed: true
+  template: configs/community_random_config_shifted.yaml

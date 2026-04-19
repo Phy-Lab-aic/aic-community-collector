@@ -15,6 +15,7 @@ dependencies = [
 [project.scripts]
 aic-collector = "aic_collector.webapp:main"
 aic-prefect-run = "aic_collector.prefect.serve:main"
+aic-collector-worker = "aic_collector.job_queue.consumer_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aic_collector"]
