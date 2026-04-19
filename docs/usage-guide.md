@@ -265,7 +265,7 @@ run_01_20260408_234406/
 
 ## 고급: Prefect 대시보드
 
-워커는 내부적으로 Prefect flow로 실행됩니다. 첫 워커가 뜰 때 **Prefect 서버가 자동으로 기동**됩니다 (`localhost:4200`).
+워커는 내부적으로 Prefect flow로 실행됩니다. **webapp 시작 시** Prefect 서버가 자동으로 백그라운드 기동됩니다 (`localhost:4200`). 이미 떠 있으면 재기동 없이 재사용합니다. CLI 워커만 단독 사용하려면 `uv run prefect server start` 을 수동으로 먼저 띄우세요.
 
 ### 접속
 
@@ -409,14 +409,13 @@ raw 이미지(`use_compressed=false`)는 run당 ~58 GB입니다. 대안:
 
 ### Prefect 서버가 안 뜸
 
-수동 기동:
+webapp은 시작 시 자동으로 4200에 prefect 서버를 띄웁니다. 실패 안내가 상단에 뜨면 `/tmp/e2e_prefect_server.log` 에서 원인을 확인하세요. 수동으로 기동하려면:
 
 ```bash
-PREFECT_UI_API_URL=http://localhost:4200/api \
-  uv run prefect server start --host 0.0.0.0 --port 4200
+uv run prefect server start --host 127.0.0.1 --port 4200
 ```
 
-webapp을 재시작하면 다음 워커부터 자동으로 사용됩니다.
+그 뒤 webapp 새로고침하면 health 체크를 통과해 그 서버를 그대로 사용합니다.
 
 ### 로그 위치 정리
 
