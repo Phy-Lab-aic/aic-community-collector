@@ -382,6 +382,7 @@ def sample_training_configs(
     scene_cfg = training_cfg.get("scene", {}) or {}
     ranges_cfg = training_cfg.get("ranges", {}) or {}
     gripper_nominal_cfg = training_cfg.get("gripper_nominal", {}) or GRIPPER_NOMINAL_DEFAULT
+    collection_cfg = training_cfg.get("collection", {}) or {}
     nominal = gripper_nominal_cfg.get(task_type, GRIPPER_NOMINAL_DEFAULT[task_type])
 
     nic_count_range = scene_cfg.get("nic_count_range", [1, 5])
@@ -395,7 +396,12 @@ def sample_training_configs(
     g_z = _resolve_scalar(ranges_cfg, "gripper_z")
     g_rpy = _resolve_scalar(ranges_cfg, "gripper_rpy")
 
-    cycle = SFP_TARGET_CYCLE if task_type == "sfp" else SC_TARGET_CYCLE
+    fixed_target = (collection_cfg.get("fixed_target", {}) or {}).get(task_type)
+    cycle = (
+        [(int(fixed_target["rail"]), str(fixed_target["port"]))]
+        if fixed_target is not None
+        else (SFP_TARGET_CYCLE if task_type == "sfp" else SC_TARGET_CYCLE)
+    )
     max_rails = 5 if task_type == "sfp" else 2
 
     # pose 설계행렬 (lhs 전용). uniform은 per-sample rng로 그때그때 추첨.

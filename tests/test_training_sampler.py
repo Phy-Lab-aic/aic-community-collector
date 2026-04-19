@@ -81,6 +81,42 @@ def test_sfp_target_cycling_20samples() -> None:
         assert count == 2, f"{key} 균등성 위반: {count}회"
 
 
+def test_fixed_target_sfp_forces_same_target() -> None:
+    """collection.fixed_target가 있으면 SFP target은 항상 그 값이어야 한다."""
+    training_cfg = {
+        "collection": {
+            "seed": 42,
+            "fixed_target": {"sfp": {"rail": 0, "port": "sfp_port_0"}},
+        }
+    }
+    samples = sample_training_configs(training_cfg, "sfp", 8, 42)
+    assert {(s.target_rail, s.target_port_name) for s in samples} == {(0, "sfp_port_0")}
+
+
+def test_collection_without_fixed_target_preserves_default_sfp_cycling() -> None:
+    """fixed_target가 없으면 collection 블록이 있어도 기존 SFP 순환이 유지돼야 한다."""
+    training_cfg = {"collection": {"seed": 42}}
+    samples = sample_training_configs(training_cfg, "sfp", 20, 42)
+    targets = Counter((s.target_rail, s.target_port_name) for s in samples)
+    assert len(targets) == 10, f"10종이 아니라 {len(targets)}종 등장"
+    for key, count in targets.items():
+        assert count == 2, f"{key} 균등성 위반: {count}회"
+
+
+def test_fixed_target_does_not_change_seed_sequence() -> None:
+    """fixed_target 유무는 per-sample seed sequence를 바꾸면 안 된다."""
+    base_cfg = {"collection": {"seed": 42}}
+    fixed_cfg = {
+        "collection": {
+            "seed": 42,
+            "fixed_target": {"sfp": {"rail": 0, "port": "sfp_port_0"}},
+        }
+    }
+    base_samples = sample_training_configs(base_cfg, "sfp", 8, 42)
+    fixed_samples = sample_training_configs(fixed_cfg, "sfp", 8, 42)
+    assert [s.seed for s in fixed_samples] == [s.seed for s in base_samples]
+
+
 def test_sc_target_cycling_10samples() -> None:
     """10개 SC 샘플 → 각 target 5번씩."""
     samples = sample_training_configs({}, "sc", 10, 42)
@@ -271,6 +307,9 @@ def main() -> int:
         ("재현성: 다른 seed → 다른 출력", test_different_seeds_differ),
         ("재현성: start_index 연속성", test_start_index_continuity),
         ("순환: SFP 20샘플 균등", test_sfp_target_cycling_20samples),
+        ("순환: fixed SFP target", test_fixed_target_sfp_forces_same_target),
+        ("순환: collection without fixed target", test_collection_without_fixed_target_preserves_default_sfp_cycling),
+        ("순환: fixed target seed sequence", test_fixed_target_does_not_change_seed_sequence),
         ("순환: SC 10샘플 균등", test_sc_target_cycling_10samples),
         ("순환: target rail 포함 보장", test_target_rail_included_in_active_rails),
         ("범위: NIC rail 개수/비복원", test_nic_rail_count_range),
