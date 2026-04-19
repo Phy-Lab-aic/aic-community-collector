@@ -171,13 +171,13 @@ policy:
 | `e2e_test.yaml` | 1 | [1] | cheatcode | lhs | 빠른 동작 테스트 |
 | `e2e_trial2_only.yaml` | 5 | [2] | cheatcode | lhs | Trial 2 집중 수집 |
 
-Web UI에서 설정을 변경한 뒤 저장하면 `configs/e2e_*.yaml`로 추가됩니다.
+위 Sweep config들은 legacy 경로이며 신규 작업은 Producer/Consumer 큐(작업 관리 탭)를 사용하는 것을 권장합니다.
 
 ---
 
-## Training Config
+## Training / Queue Config
 
-Web UI **수집 탭 → 🎓 Training** 모드에서 일괄 생성되는 엔진 config들.
+Web UI **📋 작업 관리 탭 → ➕ 큐에 추가**로 일괄 생성되는 엔진 config들 (`configs/train/{sfp,sc}/pending/config_*.yaml`).
 Sweep config와 달리 각 파일이 **완전한 scene**을 가지므로 엔진에 바로 넘길 수 있다(플레이스홀더 없음).
 
 ### 출력 구조
@@ -213,7 +213,7 @@ configs/train/
 
 ### 결정적 순환 (Target cycling)
 
-Training 모드는 `sample_index`를 target cycle 배열 인덱스로 사용해 **동일 seed라도 target 분포를 완벽히 균등**하게 맞춥니다.
+작업 관리 탭의 Target cycling(ON)은 `sample_index`를 target cycle 배열 인덱스로 사용해 **동일 seed라도 target 분포를 완벽히 균등**하게 맞춥니다.
 
 - **SFP**: `[(rail, port) for rail in 0..4 for port in ("sfp_port_0", "sfp_port_1")]` → 총 10종. `sample_index % 10`.
 - **SC**: `[(0, "sc_port_0"), (1, "sc_port_1")]` → 2종. `sample_index % 2`.
