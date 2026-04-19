@@ -280,7 +280,7 @@ class MyPolicy(Policy):
 | 점수가 0 또는 1 계속 나옴 | Policy 로직 실패 또는 ground_truth 꺼짐 | `~/aic_community_e2e/run_*/trial_scoring.yaml` | `--ground-truth true` 로 확인; policy 코드 점검 |
 | 디스크 공간 부족 | raw 이미지 축적 | `df -h ~` | `--use-compressed true` + 오래된 run 삭제 |
 | 결과 탭이 비어 있음 | output_root 경로 불일치 | `ls ~/aic_community_e2e/` | 워커 `--output-root` 와 webapp 결과 탭 경로 일치 확인 |
-| Prefect UI 접속 안 됨 | 서버 미기동 | `ps aux | grep prefect` | 첫 워커 시작 시 자동 뜸. 안 되면 `uv run prefect server start` 수동 |
+| Prefect UI 접속 안 됨 | webapp이 기동한 서버 사망 | `ps aux | grep prefect`, `/tmp/e2e_prefect_server.log` | webapp 새로고침하면 재기동. 안 되면 `uv run prefect server start --host 127.0.0.1 --port 4200` 수동 |
 | validation.json에 경고 다수 | scene 파라미터가 기대 범위 이탈 | `~/aic_community_e2e/run_*/validation.json` | cfg `ranges` 값이 AIC 범위 내인지 확인 |
 | bag 파일 크기 <1KB | 엔진이 bag 기록 전 죽음 | `/tmp/aic_worker_run.log` | policy 실패로 조기 종료됐는지 확인 |
 

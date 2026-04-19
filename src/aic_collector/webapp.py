@@ -26,6 +26,44 @@ from typing import Any
 # streamlit을 직접 실행하기 위한 부트스트랩
 # streamlit이 이 파일을 로드할 때는 __main__이 아니므로 부트스트랩을 건너뜀
 if __name__ == "__main__" and "streamlit" not in sys.modules:
+    # Prefect 서버 선기동 (fire-and-forget).
+    # Streamlit 페이지는 websocket 연결 전까지 Python 코드가 안 돌기 때문에,
+    # 브라우저 없이도 워커가 쓸 수 있도록 여기서 미리 띄운다.
+    _PREFECT_PID_FILE = Path("/tmp/e2e_prefect_server.pid")
+    _PREFECT_LOG_FILE = Path("/tmp/e2e_prefect_server.log")
+
+    def _bootstrap_prefect() -> None:
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:4200/api/health", timeout=1.5
+            ) as r:
+                if 200 <= r.status < 300:
+                    return  # already up
+        except (urllib.error.URLError, OSError, TimeoutError):
+            pass
+        # 이전 pid가 살아있으면 중복 기동 방지
+        if _PREFECT_PID_FILE.exists():
+            try:
+                os.kill(int(_PREFECT_PID_FILE.read_text().strip()), 0)
+                return
+            except (ValueError, ProcessLookupError, PermissionError):
+                _PREFECT_PID_FILE.unlink(missing_ok=True)
+
+        _PREFECT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(_PREFECT_LOG_FILE, "a")
+        p = subprocess.Popen(
+            ["uv", "run", "prefect", "server", "start",
+             "--host", "127.0.0.1", "--port", "4200"],
+            stdout=log_fh, stderr=subprocess.STDOUT,
+            cwd=str(Path(__file__).resolve().parent.parent.parent),
+            start_new_session=True,
+        )
+        _PREFECT_PID_FILE.write_text(str(p.pid))
+        print(f"[webapp] Prefect 서버 시작 요청 (pid={p.pid}) — 로그: {_PREFECT_LOG_FILE}")
+
+    _bootstrap_prefect()
     os.execvp(
         sys.executable,
         [sys.executable, "-m", "streamlit", "run", __file__,
@@ -70,6 +108,7 @@ WORKER_LOG_FILE = Path("/tmp/aic_worker_run.log")
 PREFECT_SERVER_URL = "http://127.0.0.1:4200"
 PREFECT_PORT = 4200
 PREFECT_PID_FILE = Path("/tmp/e2e_prefect_server.pid")
+PREFECT_LOG_FILE = Path("/tmp/e2e_prefect_server.log")
 
 
 def get_prefect_ui_url() -> str:
@@ -86,6 +125,62 @@ def get_prefect_ui_url() -> str:
     except Exception:
         pass
     return PREFECT_SERVER_URL
+
+
+def _prefect_server_healthy(timeout_sec: float = 1.5) -> bool:
+    """4200 포트에 prefect 서버가 응답하는지 확인."""
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+            f"{PREFECT_SERVER_URL}/api/health", timeout=timeout_sec
+        ) as resp:
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False
+
+
+def ensure_prefect_server(wait_sec: int = 30) -> bool:
+    """4200 서버가 안 떠 있으면 백그라운드로 기동 후 ready될 때까지 대기.
+
+    Streamlit rerun마다 호출돼도 안전: 이미 떠 있으면 즉시 True 반환.
+    """
+    if _prefect_server_healthy():
+        return True
+
+    # 이전 PID가 살아있는지 확인 (죽은 서버 감지)
+    if PREFECT_PID_FILE.exists():
+        try:
+            old_pid = int(PREFECT_PID_FILE.read_text().strip())
+            os.kill(old_pid, 0)  # signal 0 = alive check
+            # 살아있는데 health 실패 → 기동 중이거나 문제. 추가 대기 후 재판정.
+            for _ in range(wait_sec):
+                time.sleep(1)
+                if _prefect_server_healthy():
+                    return True
+            # 그래도 안 되면 죽은 걸로 간주하고 아래서 새로 띄움
+        except (ValueError, ProcessLookupError, PermissionError):
+            PREFECT_PID_FILE.unlink(missing_ok=True)
+
+    # 새로 기동
+    PREFECT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(PREFECT_LOG_FILE, "a")
+    proc = subprocess.Popen(
+        [
+            "uv", "run", "prefect", "server", "start",
+            "--host", "127.0.0.1", "--port", str(PREFECT_PORT),
+        ],
+        stdout=log_fh, stderr=subprocess.STDOUT,
+        cwd=str(PROJECT_DIR),
+        start_new_session=True,
+    )
+    PREFECT_PID_FILE.write_text(str(proc.pid))
+
+    for _ in range(wait_sec):
+        time.sleep(1)
+        if _prefect_server_healthy():
+            return True
+    return False
 
 
 def render_queue_bar_html(c: Any) -> str:
@@ -954,6 +1049,22 @@ st.markdown("""
 
 st.title("AIC Community Data Collector")
 
+# Prefect 서버 자동 기동 (이미 떠 있으면 skip).
+# Streamlit은 매 rerun마다 이 스크립트 전체를 재실행하지만, cache_resource로
+# 세션당 단 한 번만 호출되게 한다.
+@st.cache_resource
+def _start_prefect_once() -> bool:
+    return ensure_prefect_server(wait_sec=30)
+
+
+_prefect_up = _start_prefect_once()
+if not _prefect_up:
+    st.warning(
+        f"⚠️ Prefect 서버 기동에 실패했어요. 수동으로 `uv run prefect server start "
+        f"--host 127.0.0.1 --port {PREFECT_PORT}` 실행 후 새로고침하세요. "
+        f"로그: `{PREFECT_LOG_FILE}`"
+    )
+
 policies = discover_policies()
 
 tab_env, tab_manage, tab_execute, tab_results = st.tabs(
@@ -1640,12 +1751,18 @@ with tab_execute:
         if recover_first:
             cmd += ["--recover"]
 
+        # 워커가 webapp이 띄운 영구 Prefect 서버에 연결되도록 env 주입.
+        # 이게 없으면 매 flow run마다 ephemeral 임시 서버가 띄워져 UI에 안 보임.
+        worker_env = os.environ.copy()
+        worker_env["PREFECT_API_URL"] = f"{PREFECT_SERVER_URL}/api"
+
         proc = subprocess.Popen(
             cmd,
             stdout=open(WORKER_LOG_FILE, "a"),
             stderr=subprocess.STDOUT,
             cwd=str(PROJECT_DIR),
             start_new_session=True,
+            env=worker_env,
         )
         WORKER_PID_FILE.write_text(str(proc.pid))
 
