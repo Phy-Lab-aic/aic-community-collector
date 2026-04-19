@@ -1142,6 +1142,32 @@ def build_team_submit_preset(preset: TeamPreset, *, sfp_count: int) -> TeamPrese
     return replace(preset, tasks=tasks)
 
 
+def build_team_slot_summary(
+    preset: TeamPreset | None,
+    team_state: dict[str, Any] | None,
+    member_id: str | None,
+) -> dict[str, str] | None:
+    if preset is None or team_state is None or member_id is None:
+        return None
+
+    slot_end_inclusive = int(team_state["slot_end_exclusive"]) - 1
+    summary = {
+        "caption": (
+            "팀 슬롯: "
+            f"{int(team_state['slot_start']):0{preset.index_width}d}"
+            f" ~ {slot_end_inclusive:0{preset.index_width}d}"
+            f" · 사용 {int(team_state['used_slots'])}"
+            f" · 남은 슬롯 {int(team_state['remaining_slots'])}"
+        ),
+        "slot_exhausted_error": (
+            f"{member_id} 슬롯이 가득 찼습니다. 다른 멤버를 선택하세요."
+            if team_state.get("preview_filename") is None
+            else ""
+        ),
+    }
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Config 생성
 # ---------------------------------------------------------------------------
@@ -1425,8 +1451,13 @@ if st is not None:
         }
         # AIC 공식 최대 범위 (초과 시 경고용 — 현재 default와 동일하지만 의도 명확화)
         MGR_AIC_BOUNDS = dict(MGR_DEFAULT_RANGES)
-    
+
         team_widgets_locked = team_mode_active and team_preset is not None and team_state is not None
+        team_slot_summary = build_team_slot_summary(
+            team_preset if team_widgets_locked else None,
+            team_state if team_widgets_locked else None,
+            mgr_team_member_id if team_widgets_locked else None,
+        )
         if team_widgets_locked and mgr_team_member_id is not None and team_state is not None:
             mgr_team_member_id = st.selectbox(
                 "Member",
@@ -1436,16 +1467,11 @@ if st is not None:
                     f"{member_id} — {team_member_lookup[member_id].get('name', member_id)}"
                 ),
             )
-            slot_end_inclusive = int(team_state["slot_end_exclusive"]) - 1
-        st.caption(
-            "팀 슬롯: "
-            f"{int(team_state['slot_start']):0{team_preset.index_width}d}"
-            f" ~ {slot_end_inclusive:0{team_preset.index_width}d}"
-            f" · 사용 {int(team_state['used_slots'])}"
-            f" · 남은 슬롯 {int(team_state['remaining_slots'])}"
-        )
-        if team_state["preview_filename"] is None:
-            st.error(f"{mgr_team_member_id} 슬롯이 가득 찼습니다. 다른 멤버를 선택하세요.")
+            team_slot_summary = build_team_slot_summary(team_preset, team_state, mgr_team_member_id)
+        if team_slot_summary is not None:
+            st.caption(team_slot_summary["caption"])
+            if team_slot_summary["slot_exhausted_error"]:
+                st.error(team_slot_summary["slot_exhausted_error"])
     
         # 기본 파라미터
         col_sfp, col_sc = st.columns(2)

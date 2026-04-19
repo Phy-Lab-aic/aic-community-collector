@@ -10,7 +10,11 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from aic_collector.job_queue import QueueState, queue_dir
 from aic_collector.team_preset import TeamPreset
-from aic_collector.webapp import build_team_mode_state, build_team_submit_preset
+from aic_collector.webapp import (
+    build_team_mode_state,
+    build_team_slot_summary,
+    build_team_submit_preset,
+)
 
 
 def _preset(
@@ -102,6 +106,31 @@ def test_build_team_submit_preset_overrides_runtime_sfp_count_only() -> None:
     assert submit_preset.tasks["sfp_default_count"] == 8
     assert submit_preset.tasks["sc_default_count"] == 0
     assert "sfp" not in preset.tasks
+
+
+def test_build_team_slot_summary_returns_none_without_active_team_state() -> None:
+    assert build_team_slot_summary(None, None, None) is None
+    assert build_team_slot_summary(_preset(), None, "m0") is None
+    assert build_team_slot_summary(None, {"slot_start": 0}, "m0") is None
+
+
+def test_build_team_slot_summary_formats_caption_and_exhaustion_message() -> None:
+    summary = build_team_slot_summary(
+        _preset(index_width=6),
+        {
+            "slot_start": 10,
+            "slot_end_exclusive": 20,
+            "used_slots": 4,
+            "remaining_slots": 6,
+            "preview_filename": None,
+        },
+        "m1",
+    )
+
+    assert summary == {
+        "caption": "팀 슬롯: 000010 ~ 000019 · 사용 4 · 남은 슬롯 6",
+        "slot_exhausted_error": "m1 슬롯이 가득 찼습니다. 다른 멤버를 선택하세요.",
+    }
 
 
 def test_build_team_mode_state_rejects_missing_sfp_default_key(tmp_path: Path) -> None:
