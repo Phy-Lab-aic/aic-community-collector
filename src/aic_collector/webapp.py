@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -79,7 +80,10 @@ if __name__ == "__main__" and "streamlit" not in sys.modules:
          "--browser.gatherUsageStats", "false"],
     )
 
-import streamlit as st
+try:
+    import streamlit as st
+except ModuleNotFoundError:  # pragma: no cover - test/runtime dependency guard
+    st = None
 import yaml
 
 # ---------------------------------------------------------------------------
@@ -88,11 +92,23 @@ import yaml
 
 # PROJECT_DIR = aic-community-collector/ (루트)
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
+PRESET_PATH = PROJECT_DIR / "configs/team/preset.yaml"
+LEDGER_PATH = PROJECT_DIR / "configs/team/seed_ledger.yaml"
 
 # streamlit run으로 실행될 때는 패키지 설치 없이도 import 가능해야 함
 _SRC_DIR = str(PROJECT_DIR / "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
+
+from aic_collector.team_preset import (
+    PresetError,
+    SlotExhausted,
+    TeamPreset,
+    load_preset,
+    next_start_index_in_slot,
+    slot_range,
+    submit_team_claim,
+)
 
 POLICIES_DIR = PROJECT_DIR / "policies"
 PIXI_POLICIES_DIR = (
@@ -1019,6 +1035,113 @@ def load_results(output_root: Path = OUTPUT_ROOT) -> list[dict]:
     return rows
 
 
+def _preset_task_count(preset: TeamPreset, key: str) -> int:
+    value = preset.tasks.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise PresetError(f"Invalid preset task count: tasks.{key}")
+    return value
+
+
+def _preset_scene_count_range(
+    preset: TeamPreset,
+    key: str,
+    *,
+    allowed_min: int,
+    allowed_max: int,
+) -> tuple[int, int]:
+    value = preset.scene.get(key)
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise PresetError(f"Invalid preset scene range: scene.{key}")
+
+    lo, hi = value
+    if (
+        isinstance(lo, bool)
+        or isinstance(hi, bool)
+        or not isinstance(lo, int)
+        or not isinstance(hi, int)
+        or lo < allowed_min
+        or hi > allowed_max
+        or lo > hi
+    ):
+        raise PresetError(f"Invalid preset scene range: scene.{key}")
+    return int(lo), int(hi)
+
+
+def _preset_scene_flag(preset: TeamPreset, key: str) -> bool:
+    value = preset.scene.get(key)
+    if not isinstance(value, bool):
+        raise PresetError(f"Invalid preset scene flag: scene.{key}")
+    return value
+
+
+def _preset_range_pair(preset: TeamPreset, key: str) -> tuple[float, float]:
+    value = preset.ranges.get(key)
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise PresetError(f"Invalid preset range: sampling.ranges.{key}")
+    lo, hi = value
+    if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+        raise PresetError(f"Invalid preset range: sampling.ranges.{key}")
+    return float(lo), float(hi)
+
+
+def _preset_range_spread(preset: TeamPreset, key: str) -> float:
+    value = preset.ranges.get(key)
+    if not isinstance(value, (int, float)):
+        raise PresetError(f"Invalid preset spread: sampling.ranges.{key}")
+    return float(value)
+
+
+def build_team_mode_state(
+    preset: TeamPreset,
+    *,
+    queue_root: Path,
+    member_id: str,
+    requested_sfp_count: int | None = None,
+) -> dict[str, Any]:
+    slot_start, slot_end_exclusive = slot_range(preset, member_id)
+    slot_capacity = slot_end_exclusive - slot_start
+
+    try:
+        next_start_index = next_start_index_in_slot(preset, member_id, queue_root, "sfp")
+        used_slots = next_start_index - slot_start
+        remaining_slots = slot_end_exclusive - next_start_index
+        preview_filename = f"config_sfp_{next_start_index:0{preset.index_width}d}.yaml"
+        slot_exhausted = False
+    except SlotExhausted:
+        next_start_index = None
+        used_slots = slot_capacity
+        remaining_slots = 0
+        preview_filename = None
+        slot_exhausted = True
+
+    default_sfp_count = min(_preset_task_count(preset, "sfp_default_count"), remaining_slots)
+    requested_value = default_sfp_count if requested_sfp_count is None else int(requested_sfp_count)
+    if requested_value < 0:
+        raise PresetError("SFP count cannot be negative in team mode")
+    selected_sfp_count = min(requested_value, remaining_slots)
+
+    return {
+        "slot_start": slot_start,
+        "slot_end_exclusive": slot_end_exclusive,
+        "used_slots": used_slots,
+        "remaining_slots": remaining_slots,
+        "next_start_index": next_start_index,
+        "preview_filename": preview_filename,
+        "slot_exhausted": slot_exhausted,
+        "default_sfp_count": default_sfp_count,
+        "selected_sfp_count": selected_sfp_count,
+    }
+
+
+def build_team_submit_preset(preset: TeamPreset, *, sfp_count: int) -> TeamPreset:
+    if sfp_count < 0:
+        raise PresetError("SFP count cannot be negative in team mode")
+
+    tasks = dict(preset.tasks)
+    tasks["sfp"] = int(sfp_count)
+    return replace(preset, tasks=tasks)
+
+
 # ---------------------------------------------------------------------------
 # Config 생성
 # ---------------------------------------------------------------------------
@@ -1028,1303 +1151,1455 @@ def load_results(output_root: Path = OUTPUT_ROOT) -> list[dict]:
 # Streamlit UI
 # ===========================================================================
 
-st.set_page_config(page_title="AIC Community Collector", layout="centered")
-
-# 커스텀 CSS
-st.markdown("""
-<style>
-    /* 최대 폭 제한 */
-    .block-container {
-        max-width: 900px;
-        padding-left: 2rem;
-        padding-right: 2rem;
-    }
-    /* 카드 스타일 */
-    div[data-testid="stExpander"] {
-        border: 1px solid #e0e0e0;
-        border-radius: 8px;
-    }
-    /* 탭 글자 크기 */
-    button[data-baseweb="tab"] > div > p {
-        font-size: 1.1rem;
-        font-weight: 600;
-    }
-    /* 수집 시작 버튼 강조 */
-    div.stButton > button[kind="primary"] {
-        font-size: 1.1rem;
-        padding: 0.6rem 2rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.title("AIC Community Data Collector")
-
-# Prefect 서버 자동 기동 (이미 떠 있으면 skip).
-# Streamlit은 매 rerun마다 이 스크립트 전체를 재실행하지만, cache_resource로
-# 세션당 단 한 번만 호출되게 한다.
-@st.cache_resource
-def _start_prefect_once() -> bool:
-    return ensure_prefect_server(wait_sec=30)
-
-
-_prefect_up = _start_prefect_once()
-if not _prefect_up:
-    st.warning(
-        f"⚠️ Prefect 서버 기동에 실패했어요. 수동으로 `uv run prefect server start "
-        f"--host 0.0.0.0 --port {PREFECT_PORT}` 실행 후 새로고침하세요. "
-        f"로그: `{PREFECT_LOG_FILE}`"
-    )
-
-policies = discover_policies()
-
-tab_env, tab_manage, tab_execute, tab_results = st.tabs(
-    ["🔍 환경 점검", "📋 작업 관리", "🏃 작업 실행", "📊 결과"]
-)
-
-# --- 환경 점검 탭 ---
-with tab_env:
-    st.subheader("환경 점검")
-    checks = check_environment()
-    all_ok = True
-    fixable = []
-
-    for c in checks:
-        if c["ok"]:
-            st.markdown(f"✅ **{c['name']}** — {c['msg']}")
-        else:
-            all_ok = False
-            st.markdown(f"❌ **{c['name']}** — {c['msg']}")
-            if c["fix"]:
-                fixable.append(c)
-
-    if all_ok:
-        st.success("모든 환경이 준비되었습니다. '수집' 탭으로 이동하세요.")
-    elif fixable:
-        st.warning(f"미비 항목 {len(fixable)}개 — 아래에서 자동 설치할 수 있습니다.")
-        for c in fixable:
-            col_name, col_btn = st.columns([3, 1])
-            col_name.code(c["fix"])
-            if col_btn.button(f"설치", key=f"fix_{c['name']}"):
-                with st.spinner(f"{c['name']} 설치 중..."):
-                    r = subprocess.run(c["fix"], shell=True, capture_output=True, text=True, timeout=120)
-                if r.returncode == 0:
-                    st.success(f"{c['name']} 설치 완료")
-                    st.rerun()
-                else:
-                    st.error(f"설치 실패: {r.stderr[:200]}")
-    else:
-        st.warning("미비 항목은 수동 설치가 필요합니다.")
-
-# --- 작업 관리 탭 (Phase 2a — Producer) ---
-with tab_manage:
-    from aic_collector.job_queue import (
-        QueueCounts,
-        QueueState,
-        TASK_TYPES,
-        all_counts,
-        ensure_queue_dirs,
-        list_configs,
-        migrate_legacy_to_pending,
-        write_plans,
-    )
-    from aic_collector.sampler import sample_scenes
-
-    st.subheader("📋 작업 관리")
-    st.caption(
-        "Config 파일을 생성해 **pending/ 큐**에 적재합니다. "
-        "실행은 🏃 작업 실행 탭에서 진행합니다."
-    )
-
-    # 큐 루트 — 작업 관리·작업 실행 탭이 shared_queue_root 세션 키로 양방향 싱크
-    _DEFAULT_QUEUE_ROOT = str(PROJECT_DIR / "configs/train")
-    if "shared_queue_root" not in st.session_state:
-        st.session_state["shared_queue_root"] = _DEFAULT_QUEUE_ROOT
-
-    def _sync_queue_root_from(source_key: str) -> None:
-        st.session_state["shared_queue_root"] = st.session_state[source_key]
-
-    # pre-render seed — 상대 탭이 업데이트한 값이 있으면 위젯 상태에 반영
-    if st.session_state.get("mgr_queue_root") != st.session_state["shared_queue_root"]:
-        st.session_state["mgr_queue_root"] = st.session_state["shared_queue_root"]
-
-    mgr_queue_root_str = st.text_input(
-        "큐 루트",
-        key="mgr_queue_root",
-        help=(
-            "`<루트>/sfp/pending/` 형태로 task·state별 디렉토리를 둡니다. "
-            "state는 pending/running/done/failed. 작업 실행 탭과 값이 공유됩니다."
-        ),
-        on_change=_sync_queue_root_from, args=("mgr_queue_root",),
-    )
-    mgr_queue_root = Path(mgr_queue_root_str)
-
-    st.divider()
-
-    # 큐 상태 (task_type별 가로 stacked bar 1줄)
-    hdr_col, btn_col = st.columns([5, 1])
-    with hdr_col:
-        st.markdown("### 📊 큐 상태")
-    with btn_col:
-        if st.button("🔄 새로고침", key="mgr_refresh_counts"):
-            st.rerun()
-
-    counts = all_counts(mgr_queue_root) if mgr_queue_root.exists() else {
-        t: None for t in TASK_TYPES
-    }
-    render_queue_status_block(counts, TASK_TYPES)
-
-    # Legacy 마이그레이션
-    total_legacy = sum(
-        c.legacy for c in counts.values() if c is not None
-    )
-    if total_legacy > 0:
+if st is not None:
+    st.set_page_config(page_title="AIC Community Collector", layout="centered")
+    
+    # 커스텀 CSS
+    st.markdown("""
+    <style>
+        /* 최대 폭 제한 */
+        .block-container {
+            max-width: 900px;
+            padding-left: 2rem;
+            padding-right: 2rem;
+        }
+        /* 카드 스타일 */
+        div[data-testid="stExpander"] {
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+        }
+        /* 탭 글자 크기 */
+        button[data-baseweb="tab"] > div > p {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        /* 수집 시작 버튼 강조 */
+        div.stButton > button[kind="primary"] {
+            font-size: 1.1rem;
+            padding: 0.6rem 2rem;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.title("AIC Community Data Collector")
+    
+    # Prefect 서버 자동 기동 (이미 떠 있으면 skip).
+    # Streamlit은 매 rerun마다 이 스크립트 전체를 재실행하지만, cache_resource로
+    # 세션당 단 한 번만 호출되게 한다.
+    @st.cache_resource
+    def _start_prefect_once() -> bool:
+        return ensure_prefect_server(wait_sec=30)
+    
+    
+    _prefect_up = _start_prefect_once()
+    if not _prefect_up:
         st.warning(
-            f"⚠️ Legacy 파일 **{total_legacy}개**가 상태 디렉토리 밖에 있습니다. "
-            f"pending/으로 이동하면 큐 관리가 일관됩니다."
+            f"⚠️ Prefect 서버 기동에 실패했어요. 수동으로 `uv run prefect server start "
+            f"--host 0.0.0.0 --port {PREFECT_PORT}` 실행 후 새로고침하세요. "
+            f"로그: `{PREFECT_LOG_FILE}`"
         )
-        if st.button(
-            f"🔀 Legacy {total_legacy}개 → pending/으로 이동",
-            key="mgr_migrate_legacy",
-        ):
-            moved = migrate_legacy_to_pending(mgr_queue_root)
-            total_moved = sum(moved.values())
-            if total_moved > 0:
-                detail = ", ".join(f"{k}={v}" for k, v in moved.items() if v > 0)
-                st.success(f"이동 완료: {detail}")
+    
+    policies = discover_policies()
+    
+    tab_env, tab_manage, tab_execute, tab_results = st.tabs(
+        ["🔍 환경 점검", "📋 작업 관리", "🏃 작업 실행", "📊 결과"]
+    )
+    
+    # --- 환경 점검 탭 ---
+    with tab_env:
+        st.subheader("환경 점검")
+        checks = check_environment()
+        all_ok = True
+        fixable = []
+    
+        for c in checks:
+            if c["ok"]:
+                st.markdown(f"✅ **{c['name']}** — {c['msg']}")
             else:
-                st.info("이동된 파일 없음 (pending에 이미 같은 이름이 있는 경우 건너뜁니다)")
-            st.rerun()
-
-    st.divider()
-
-    # 생성 설정
-    st.markdown("### ➕ 큐에 추가")
-
-    # 공식 문서 URL (help 툴팁에 근거 링크로 사용)
-    AIC_TASK_BOARD_URL = (
-        "https://github.com/intrinsic-dev/aic/blob/main/docs/task_board_description.md"
-    )
-    AIC_QUAL_PHASE_URL = (
-        "https://github.com/intrinsic-dev/aic/blob/main/docs/qualification_phase.md"
-    )
-
-    # AIC 공식 기본값 (task_board_description.md / qualification_phase.md 기준)
-    MGR_DEFAULT_NIC_COUNT_RANGE = (1, 5)
-    MGR_DEFAULT_SC_COUNT_RANGE = (1, 2)
-    MGR_DEFAULT_TARGET_CYCLING = True
-    MGR_DEFAULT_RANGES = {
-        "nic_translation": (-0.0215, 0.0234),
-        "nic_yaw":         (-0.1745, 0.1745),
-        "sc_translation":  (-0.06, 0.055),
-        "gripper_xy":      0.002,
-        "gripper_z":       0.002,
-        "gripper_rpy":     0.04,
-    }
-    # AIC 공식 최대 범위 (초과 시 경고용 — 현재 default와 동일하지만 의도 명확화)
-    MGR_AIC_BOUNDS = dict(MGR_DEFAULT_RANGES)
-
-    # 기본 파라미터
-    col_sfp, col_sc = st.columns(2)
-    with col_sfp:
-        mgr_sfp_count = st.number_input(
-            "SFP configs",
-            min_value=0, max_value=10000, value=20, step=10,
+                all_ok = False
+                st.markdown(f"❌ **{c['name']}** — {c['msg']}")
+                if c["fix"]:
+                    fixable.append(c)
+    
+        if all_ok:
+            st.success("모든 환경이 준비되었습니다. '수집' 탭으로 이동하세요.")
+        elif fixable:
+            st.warning(f"미비 항목 {len(fixable)}개 — 아래에서 자동 설치할 수 있습니다.")
+            for c in fixable:
+                col_name, col_btn = st.columns([3, 1])
+                col_name.code(c["fix"])
+                if col_btn.button(f"설치", key=f"fix_{c['name']}"):
+                    with st.spinner(f"{c['name']} 설치 중..."):
+                        r = subprocess.run(c["fix"], shell=True, capture_output=True, text=True, timeout=120)
+                    if r.returncode == 0:
+                        st.success(f"{c['name']} 설치 완료")
+                        st.rerun()
+                    else:
+                        st.error(f"설치 실패: {r.stderr[:200]}")
+        else:
+            st.warning("미비 항목은 수동 설치가 필요합니다.")
+    
+    # --- 작업 관리 탭 (Phase 2a — Producer) ---
+    with tab_manage:
+        from aic_collector.job_queue import (
+            QueueCounts,
+            QueueState,
+            TASK_TYPES,
+            all_counts,
+            ensure_queue_dirs,
+            list_configs,
+            migrate_legacy_to_pending,
+            write_plans,
+        )
+        from aic_collector.sampler import sample_scenes
+    
+        st.subheader("📋 작업 관리")
+        st.caption(
+            "Config 파일을 생성해 **pending/ 큐**에 적재합니다. "
+            "실행은 🏃 작업 실행 탭에서 진행합니다."
+        )
+    
+        team_preset: TeamPreset | None = None
+        team_mode_error: PresetError | None = None
+        try:
+            team_preset = load_preset(PRESET_PATH)
+        except PresetError as exc:
+            team_mode_error = exc
+    
+        if team_mode_error is not None:
+            st.error(f"팀 preset 로드 실패: {team_mode_error}")
+        elif team_preset is not None:
+            st.info(f"👥 Team mode 활성화 · preset {team_preset.preset_hash}")
+    
+        # 큐 루트 — 작업 관리·작업 실행 탭이 shared_queue_root 세션 키로 양방향 싱크
+        _DEFAULT_QUEUE_ROOT = str(PROJECT_DIR / "configs/train")
+        if "shared_queue_root" not in st.session_state:
+            st.session_state["shared_queue_root"] = _DEFAULT_QUEUE_ROOT
+    
+        def _sync_queue_root_from(source_key: str) -> None:
+            st.session_state["shared_queue_root"] = st.session_state[source_key]
+    
+        # pre-render seed — 상대 탭이 업데이트한 값이 있으면 위젯 상태에 반영
+        if st.session_state.get("mgr_queue_root") != st.session_state["shared_queue_root"]:
+            st.session_state["mgr_queue_root"] = st.session_state["shared_queue_root"]
+    
+        mgr_queue_root_str = st.text_input(
+            "큐 루트",
+            key="mgr_queue_root",
+            help=(
+                "`<루트>/sfp/pending/` 형태로 task·state별 디렉토리를 둡니다. "
+                "state는 pending/running/done/failed. 작업 실행 탭과 값이 공유됩니다."
+            ),
+            on_change=_sync_queue_root_from, args=("mgr_queue_root",),
+        )
+        mgr_queue_root = Path(mgr_queue_root_str)
+    
+        team_mode_active = team_preset is not None and team_mode_error is None
+        team_state: dict[str, Any] | None = None
+        team_member_options: list[str] = []
+        team_member_lookup: dict[str, dict[str, str]] = {}
+        mgr_team_member_id: str | None = None
+        mgr_team_sc_default_count = 0
+        if team_mode_active and team_preset is not None:
+            team_member_lookup = {
+                str(member["id"]): {str(k): str(v) for k, v in member.items()}
+                for member in team_preset.members
+            }
+            team_member_options = list(team_member_lookup)
+            if not team_member_options:
+                team_mode_error = PresetError("Invalid members field: members")
+                st.error(f"팀 preset 적용 실패: {team_mode_error}")
+                team_mode_active = False
+            else:
+                if st.session_state.get("mgr_team_member") not in team_member_options:
+                    st.session_state["mgr_team_member"] = team_member_options[0]
+                mgr_team_member_id = str(st.session_state["mgr_team_member"])
+                try:
+                    mgr_team_sc_default_count = _preset_task_count(team_preset, "sc_default_count")
+                    team_state = build_team_mode_state(
+                        team_preset,
+                        queue_root=mgr_queue_root,
+                        member_id=mgr_team_member_id,
+                        requested_sfp_count=st.session_state.get("mgr_sfp_count"),
+                    )
+                    nic_range = _preset_scene_count_range(
+                        team_preset,
+                        "nic_count_range",
+                        allowed_min=1,
+                        allowed_max=5,
+                    )
+                    sc_range = _preset_scene_count_range(
+                        team_preset,
+                        "sc_count_range",
+                        allowed_min=1,
+                        allowed_max=2,
+                    )
+                    st.session_state["mgr_nic_fixed"] = nic_range[0] == nic_range[1]
+                    st.session_state["mgr_nic_max"] = nic_range[1]
+                    st.session_state["mgr_sc_fixed"] = sc_range[0] == sc_range[1]
+                    st.session_state["mgr_sc_max"] = sc_range[1]
+                    st.session_state["mgr_target_cycling"] = _preset_scene_flag(
+                        team_preset,
+                        "target_cycling",
+                    )
+                    st.session_state["mgr_param_strategy"] = str(team_preset.strategy)
+                    st.session_state["mgr_seed"] = int(team_preset.base_seed)
+                    st.session_state["mgr_sc_count"] = mgr_team_sc_default_count
+                    st.session_state["mgr_sfp_count"] = int(team_state["selected_sfp_count"])
+                    for range_key in ("nic_translation", "nic_yaw", "sc_translation"):
+                        st.session_state[f"mgr_range_{range_key}_range"] = _preset_range_pair(
+                            team_preset,
+                            range_key,
+                        )
+                    for range_key in ("gripper_xy", "gripper_z", "gripper_rpy"):
+                        st.session_state[f"mgr_range_{range_key}_spread"] = _preset_range_spread(
+                            team_preset,
+                            range_key,
+                        )
+                except PresetError as exc:
+                    team_mode_error = exc
+                    st.error(f"팀 preset 적용 실패: {team_mode_error}")
+                    team_mode_active = False
+    
+        st.divider()
+    
+        # 큐 상태 (task_type별 가로 stacked bar 1줄)
+        hdr_col, btn_col = st.columns([5, 1])
+        with hdr_col:
+            st.markdown("### 📊 큐 상태")
+        with btn_col:
+            if st.button("🔄 새로고침", key="mgr_refresh_counts"):
+                st.rerun()
+    
+        counts = all_counts(mgr_queue_root) if mgr_queue_root.exists() else {
+            t: None for t in TASK_TYPES
+        }
+        render_queue_status_block(counts, TASK_TYPES)
+    
+        # Legacy 마이그레이션
+        total_legacy = sum(
+            c.legacy for c in counts.values() if c is not None
+        )
+        if total_legacy > 0:
+            st.warning(
+                f"⚠️ Legacy 파일 **{total_legacy}개**가 상태 디렉토리 밖에 있습니다. "
+                f"pending/으로 이동하면 큐 관리가 일관됩니다."
+            )
+            if st.button(
+                f"🔀 Legacy {total_legacy}개 → pending/으로 이동",
+                key="mgr_migrate_legacy",
+            ):
+                moved = migrate_legacy_to_pending(mgr_queue_root)
+                total_moved = sum(moved.values())
+                if total_moved > 0:
+                    detail = ", ".join(f"{k}={v}" for k, v in moved.items() if v > 0)
+                    st.success(f"이동 완료: {detail}")
+                else:
+                    st.info("이동된 파일 없음 (pending에 이미 같은 이름이 있는 경우 건너뜁니다)")
+                st.rerun()
+    
+        st.divider()
+    
+        # 생성 설정
+        st.markdown("### ➕ 큐에 추가")
+    
+        # 공식 문서 URL (help 툴팁에 근거 링크로 사용)
+        AIC_TASK_BOARD_URL = (
+            "https://github.com/intrinsic-dev/aic/blob/main/docs/task_board_description.md"
+        )
+        AIC_QUAL_PHASE_URL = (
+            "https://github.com/intrinsic-dev/aic/blob/main/docs/qualification_phase.md"
+        )
+    
+        # AIC 공식 기본값 (task_board_description.md / qualification_phase.md 기준)
+        MGR_DEFAULT_NIC_COUNT_RANGE = (1, 5)
+        MGR_DEFAULT_SC_COUNT_RANGE = (1, 2)
+        MGR_DEFAULT_TARGET_CYCLING = True
+        MGR_DEFAULT_RANGES = {
+            "nic_translation": (-0.0215, 0.0234),
+            "nic_yaw":         (-0.1745, 0.1745),
+            "sc_translation":  (-0.06, 0.055),
+            "gripper_xy":      0.002,
+            "gripper_z":       0.002,
+            "gripper_rpy":     0.04,
+        }
+        # AIC 공식 최대 범위 (초과 시 경고용 — 현재 default와 동일하지만 의도 명확화)
+        MGR_AIC_BOUNDS = dict(MGR_DEFAULT_RANGES)
+    
+        team_widgets_locked = team_mode_active and team_preset is not None and team_state is not None
+        if team_widgets_locked and mgr_team_member_id is not None and team_state is not None:
+            mgr_team_member_id = st.selectbox(
+                "Member",
+                options=team_member_options,
+                key="mgr_team_member",
+                format_func=lambda member_id: (
+                    f"{member_id} — {team_member_lookup[member_id].get('name', member_id)}"
+                ),
+            )
+            slot_end_inclusive = int(team_state["slot_end_exclusive"]) - 1
+        st.caption(
+            "팀 슬롯: "
+            f"{int(team_state['slot_start']):0{team_preset.index_width}d}"
+            f" ~ {slot_end_inclusive:0{team_preset.index_width}d}"
+            f" · 사용 {int(team_state['used_slots'])}"
+            f" · 남은 슬롯 {int(team_state['remaining_slots'])}"
+        )
+        if team_state["preview_filename"] is None:
+            st.error(f"{mgr_team_member_id} 슬롯이 가득 찼습니다. 다른 멤버를 선택하세요.")
+    
+        # 기본 파라미터
+        col_sfp, col_sc = st.columns(2)
+        with col_sfp:
+            mgr_sfp_count = st.number_input(
+                "SFP configs",
+                min_value=0,
+            max_value=int(team_state["remaining_slots"]) if team_widgets_locked and team_state is not None else 10000,
+            value=int(team_state["selected_sfp_count"]) if team_widgets_locked and team_state is not None else 20,
+            step=1 if team_widgets_locked else 10,
             key="mgr_sfp_count",
+            disabled=bool(
+                team_widgets_locked
+                and team_state is not None
+                and int(team_state["remaining_slots"]) == 0
+            ),
             help=(
                 "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
                 "균등 순환. 10의 배수 권장.  \n"
                 f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
             ),
-        )
-    with col_sc:
-        mgr_sc_count = st.number_input(
-            "SC configs",
-            min_value=0, max_value=10000, value=10, step=2,
-            key="mgr_sc_count",
-            help=(
-                "target cycling ON 시 SC 2종 target (rail 0·1)을 "
-                "균등 순환. 2의 배수 권장.  \n"
-                f"📖 [qualification_phase.md Trial 3]({AIC_QUAL_PHASE_URL}#trial-3-generalization-sc)"
-            ),
-        )
-
-    # 🎬 Scene expander — 엔티티 개수 및 target 전략
-    with st.expander("🎬 Scene — 엔티티 개수 및 target 전략", expanded=False):
-        # NIC — 체크박스 + 단일 슬라이더
-        col_nic_fix, col_nic_slider = st.columns([1, 3])
-        with col_nic_fix:
-            st.markdown("###### NIC")
-            mgr_nic_fixed = st.checkbox(
-                "고정 개수", value=False, key="mgr_nic_fixed",
-                help="on: 매 샘플 정확히 N개 / off: 1~N개 랜덤",
             )
-        with col_nic_slider:
-            mgr_nic_max = st.slider(
-                "NIC 개수 (고정)" if mgr_nic_fixed else "NIC 최대 개수 (1~N 랜덤)",
-                min_value=1, max_value=5, value=5, step=1,
-                key="mgr_nic_max",
+        with col_sc:
+            mgr_sc_count = st.number_input(
+                "SC configs",
+                min_value=0,
+                max_value=10000,
+                value=mgr_team_sc_default_count if team_widgets_locked else 10,
+                step=1 if team_widgets_locked else 2,
+                key="mgr_sc_count",
+                disabled=team_widgets_locked,
                 help=(
-                    "scene에 배치할 NIC 카드 개수. rail 0~4 중에서 선택.  \n"
-                    f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
-                ),
-            )
-        mgr_nic_count_range = (mgr_nic_max if mgr_nic_fixed else 1, mgr_nic_max)
-
-        # SC — 동일 패턴
-        col_sc_fix, col_sc_slider = st.columns([1, 3])
-        with col_sc_fix:
-            st.markdown("###### SC")
-            mgr_sc_fixed = st.checkbox(
-                "고정 개수", value=False, key="mgr_sc_fixed",
-                help="on: 매 샘플 정확히 N개 / off: 1~N개 랜덤",
-            )
-        with col_sc_slider:
-            mgr_sc_max = st.slider(
-                "SC 개수 (고정)" if mgr_sc_fixed else "SC 최대 개수 (1~N 랜덤)",
-                min_value=1, max_value=2, value=2, step=1,
-                key="mgr_sc_max",
-                help=(
-                    "scene에 배치할 SC 포트 개수. rail 0·1 중에서 선택.  \n"
+                    "target cycling ON 시 SC 2종 target (rail 0·1)을 "
+                    "균등 순환. 2의 배수 권장.  \n"
                     f"📖 [qualification_phase.md Trial 3]({AIC_QUAL_PHASE_URL}#trial-3-generalization-sc)"
                 ),
             )
-        mgr_sc_count_range = (mgr_sc_max if mgr_sc_fixed else 1, mgr_sc_max)
-
-        mgr_target_cycling = st.checkbox(
-            "Target cycling (결정적 순환으로 균등 분배)",
-            value=MGR_DEFAULT_TARGET_CYCLING,
-            key="mgr_target_cycling",
-            help=(
-                "on: SFP 10종·SC 2종 target을 sample_index 기반으로 정확히 균등 분배. "
-                "off: 매 샘플 uniform 랜덤 추첨 (개수 적을 때 불균등).\n\n"
-                f"📖 SFP 10종 구조: [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)  \n"
-                f"📖 SC 2종 구조: [qualification_phase.md Trial 3]({AIC_QUAL_PHASE_URL}#trial-3-generalization-sc)"
-            ),
-        )
-
-        # 시각 다이어그램 — 현재 Scene 설정으로 샘플 3개 생성해 실제 조합을 보여줌
-        # ranges는 pose 값이라 다이어그램에 무관하므로 기본값으로 생성.
-        # st.markdown(unsafe_allow_html)은 SVG를 살균 → components.v1.html 사용.
-        _scene_svg = render_scene_svg(
-            nic_range=tuple(mgr_nic_count_range),
-            sc_range=tuple(mgr_sc_count_range),
-            target_cycling=bool(mgr_target_cycling),
-            ranges=None,  # pose 값은 시각에 영향 없음 → 기본값
-            seed=int(st.session_state.get("mgr_seed", 42)),
-            task_type="sfp",
-            sample_count=3,
-        )
-        st.components.v1.html(
-            f'<div style="display:flex;justify-content:center;padding:4px;">'
-            f'{_scene_svg}</div>',
-            height=560,
-            scrolling=True,
-        )
-
-    # 📏 Parameters expander — 랜덤화 범위 + 샘플링 전략
-    with st.expander("📏 Parameters — 랜덤화 범위", expanded=False):
-        st.caption(
-            "슬라이더의 min/max는 **AIC 공식 최대 허용 범위**입니다 — 초과 불가. "
-            "범위를 좁히면 더 제한적인 학습 데이터가 생성됩니다. "
-            "출처: "
-            "[task_board_description.md]"
-            "(https://github.com/intrinsic-dev/aic/blob/main/docs/task_board_description.md), "
-            "[qualification_phase.md]"
-            "(https://github.com/intrinsic-dev/aic/blob/main/docs/qualification_phase.md)."
-        )
-
-        strategy_opts = ["uniform", "lhs"]
-        mgr_param_strategy = st.selectbox(
-            "샘플링 전략",
-            strategy_opts,
-            index=0,
-            key="mgr_param_strategy",
-            help=(
-                "pose 연속값(NIC/SC translation·yaw, gripper offset) 분포 전략. "
-                "target·entity 개수는 적용 대상 아님.\n\n"
-                "**uniform** — 각 샘플 독립 균등 난수 (기본).\n\n"
-                "**lhs** — Latin Hypercube. 공간 채움 우수, 샘플 수 적을 때 유리. "
-                "단 append 배치마다 독립 재추첨."
-            ),
-        )
-
-        _strategy_svg = render_sampling_strategy_svg(str(mgr_param_strategy))
-        st.components.v1.html(
-            f'<div style="display:flex;justify-content:center;padding:4px;">'
-            f'{_strategy_svg}</div>',
-            height=420,
-            scrolling=False,
-        )
-
-        # (label, key, (aic_min, aic_max), step, format, source_url)
-        # NIC translation/yaw·SC translation → task_board_description.md Zone 1/2
-        range_fields = [
-            ("NIC translation (m)", "nic_translation", (-0.0215, 0.0234), 0.0001, "%.4f", AIC_TASK_BOARD_URL),
-            ("NIC yaw (rad)",       "nic_yaw",         (-0.1745, 0.1745), 0.0010, "%.4f", AIC_TASK_BOARD_URL),
-            ("SC translation (m)",  "sc_translation",  (-0.06,   0.055),  0.0010, "%.4f", AIC_TASK_BOARD_URL),
-        ]
-        # Gripper ± 편차 → qualification_phase.md §1 "~2mm, ~0.04 rad"
-        # (label, key, aic_max, step, format, source_url)
-        spread_fields = [
-            ("Gripper x / y (±m)",   "gripper_xy",  0.002, 0.0001, "%.4f", AIC_QUAL_PHASE_URL),
-            ("Gripper z (±m)",       "gripper_z",   0.002, 0.0001, "%.4f", AIC_QUAL_PHASE_URL),
-            ("Gripper rpy (±rad)",   "gripper_rpy", 0.04,  0.0010, "%.4f", AIC_QUAL_PHASE_URL),
-        ]
-
-        user_ranges: dict[str, Any] = {}
-
-        st.markdown("**Range (min ~ max)** — 핸들 두 개로 범위 지정")
-        for label, key, (lo, hi), step, fmt, url in range_fields:
-            v = st.slider(
-                label,
-                min_value=float(lo), max_value=float(hi),
-                value=(float(lo), float(hi)),
-                step=float(step),
-                format=fmt,
-                key=f"mgr_range_{key}_range",
-                help=f"AIC 공식 허용: [{lo}, {hi}]  \n📖 [task_board_description.md]({url})",
+    
+        # 🎬 Scene expander — 엔티티 개수 및 target 전략
+        with st.expander("🎬 Scene — 엔티티 개수 및 target 전략", expanded=False):
+            # NIC — 체크박스 + 단일 슬라이더
+            col_nic_fix, col_nic_slider = st.columns([1, 3])
+            with col_nic_fix:
+                st.markdown("###### NIC")
+                mgr_nic_fixed = st.checkbox(
+                    "고정 개수", value=False, key="mgr_nic_fixed",
+                    disabled=team_widgets_locked,
+                    help="on: 매 샘플 정확히 N개 / off: 1~N개 랜덤",
+                )
+            with col_nic_slider:
+                mgr_nic_max = st.slider(
+                    "NIC 개수 (고정)" if mgr_nic_fixed else "NIC 최대 개수 (1~N 랜덤)",
+                    min_value=1, max_value=5, value=5, step=1,
+                    key="mgr_nic_max",
+                    disabled=team_widgets_locked,
+                    help=(
+                        "scene에 배치할 NIC 카드 개수. rail 0~4 중에서 선택.  \n"
+                        f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
+                    ),
+                )
+            mgr_nic_count_range = (mgr_nic_max if mgr_nic_fixed else 1, mgr_nic_max)
+    
+            # SC — 동일 패턴
+            col_sc_fix, col_sc_slider = st.columns([1, 3])
+            with col_sc_fix:
+                st.markdown("###### SC")
+                mgr_sc_fixed = st.checkbox(
+                    "고정 개수", value=False, key="mgr_sc_fixed",
+                    disabled=team_widgets_locked,
+                    help="on: 매 샘플 정확히 N개 / off: 1~N개 랜덤",
+                )
+            with col_sc_slider:
+                mgr_sc_max = st.slider(
+                    "SC 개수 (고정)" if mgr_sc_fixed else "SC 최대 개수 (1~N 랜덤)",
+                    min_value=1, max_value=2, value=2, step=1,
+                    key="mgr_sc_max",
+                    disabled=team_widgets_locked,
+                    help=(
+                        "scene에 배치할 SC 포트 개수. rail 0·1 중에서 선택.  \n"
+                        f"📖 [qualification_phase.md Trial 3]({AIC_QUAL_PHASE_URL}#trial-3-generalization-sc)"
+                    ),
+                )
+            mgr_sc_count_range = (mgr_sc_max if mgr_sc_fixed else 1, mgr_sc_max)
+    
+            mgr_target_cycling = st.checkbox(
+                "Target cycling (결정적 순환으로 균등 분배)",
+                value=MGR_DEFAULT_TARGET_CYCLING,
+                key="mgr_target_cycling",
+                disabled=team_widgets_locked,
+                help=(
+                    "on: SFP 10종·SC 2종 target을 sample_index 기반으로 정확히 균등 분배. "
+                    "off: 매 샘플 uniform 랜덤 추첨 (개수 적을 때 불균등).\n\n"
+                    f"📖 SFP 10종 구조: [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)  \n"
+                    f"📖 SC 2종 구조: [qualification_phase.md Trial 3]({AIC_QUAL_PHASE_URL}#trial-3-generalization-sc)"
+                ),
             )
-            user_ranges[key] = [float(v[0]), float(v[1])]
-
-        st.markdown("**Spread (nominal ± value)** — 그리퍼 offset 편차")
-        for label, key, aic_max, step, fmt, url in spread_fields:
-            v = st.slider(
-                label,
-                min_value=0.0, max_value=float(aic_max),
-                value=float(aic_max),
-                step=float(step),
-                format=fmt,
-                key=f"mgr_range_{key}_spread",
-                help=f"AIC 공식 허용: ± {aic_max}  \n📖 [qualification_phase.md §1]({url})",
+    
+            # 시각 다이어그램 — 현재 Scene 설정으로 샘플 3개 생성해 실제 조합을 보여줌
+            # ranges는 pose 값이라 다이어그램에 무관하므로 기본값으로 생성.
+            # st.markdown(unsafe_allow_html)은 SVG를 살균 → components.v1.html 사용.
+            _scene_svg = render_scene_svg(
+                nic_range=tuple(mgr_nic_count_range),
+                sc_range=tuple(mgr_sc_count_range),
+                target_cycling=bool(mgr_target_cycling),
+                ranges=None,  # pose 값은 시각에 영향 없음 → 기본값
+                seed=int(st.session_state.get("mgr_seed", 42)),
+                task_type="sfp",
+                sample_count=3,
             )
-            user_ranges[key] = float(v)
-
-        # 시각 미리보기 — 선택 범위 vs AIC 최대 허용
-        _params_svg = render_parameters_svg(user_ranges)
-        st.components.v1.html(
-            f'<div style="display:flex;justify-content:center;padding:4px;">'
-            f'{_params_svg}</div>',
-            height=680,
-            scrolling=True,
-        )
-
-        # 변경 여부 판정 (모든 값이 AIC 공식 기본값=최대 범위와 같은지)
-        def _tol_eq(a, b, tol: float = 1e-9) -> bool:
-            if isinstance(a, (list, tuple)):
-                return all(abs(x - y) <= tol for x, y in zip(a, b))
-            return abs(a - b) <= tol
-
-        ranges_is_custom = not all(
-            _tol_eq(user_ranges[k], MGR_DEFAULT_RANGES[k])
-            for k in MGR_DEFAULT_RANGES
-        )
-
-        col_badge, col_reset = st.columns([3, 1])
-        with col_badge:
-            if ranges_is_custom:
-                st.info("⚙️ 사용자 정의 범위 — 기본값보다 좁게 설정됨")
-            else:
-                st.success("✅ AIC 공식 기본값 (최대 허용 범위)")
-        with col_reset:
-            if st.button("🔄 범위 리셋", key="mgr_reset_ranges"):
-                for k in list(st.session_state.keys()):
-                    if k.startswith("mgr_range_"):
-                        del st.session_state[k]
-                st.rerun()
-
-    # ⚙️ 고급 — 재현용 seed
-    with st.expander("⚙️ 고급", expanded=False):
-        mgr_seed = st.number_input(
-            "Seed",
-            min_value=0, value=42,
-            key="mgr_seed",
-            help="재현용 base seed. 같은 seed + 같은 설정 → 같은 config 생성.",
-        )
-
-    # Scene 사용자 정의 여부 (Scene 섹션 하단에 뱃지)
-    scene_is_custom = (
-        tuple(mgr_nic_count_range) != MGR_DEFAULT_NIC_COUNT_RANGE
-        or tuple(mgr_sc_count_range) != MGR_DEFAULT_SC_COUNT_RANGE
-        or mgr_target_cycling != MGR_DEFAULT_TARGET_CYCLING
-    )
-    if scene_is_custom:
-        if mgr_target_cycling:
-            st.caption("🎬 Scene: 사용자 정의 설정")
-        else:
+            st.components.v1.html(
+                f'<div style="display:flex;justify-content:center;padding:4px;">'
+                f'{_scene_svg}</div>',
+                height=560,
+                scrolling=True,
+            )
+    
+        # 📏 Parameters expander — 랜덤화 범위 + 샘플링 전략
+        with st.expander("📏 Parameters — 랜덤화 범위", expanded=False):
             st.caption(
-                "🎬 Scene: 사용자 정의 설정 · ⚠ target cycling off — "
-                "개수 적을 때 target 분포 불균등"
+                "슬라이더의 min/max는 **AIC 공식 최대 허용 범위**입니다 — 초과 불가. "
+                "범위를 좁히면 더 제한적인 학습 데이터가 생성됩니다. "
+                "출처: "
+                "[task_board_description.md]"
+                "(https://github.com/intrinsic-dev/aic/blob/main/docs/task_board_description.md), "
+                "[qualification_phase.md]"
+                "(https://github.com/intrinsic-dev/aic/blob/main/docs/qualification_phase.md)."
             )
-
-    # 생성될 번호 미리보기 — 항상 기존 큐 번호에 이어서 생성 (덮어쓰기 방지)
-    start_sfp = 0
-    start_sc = 0
-    if mgr_queue_root.exists():
-        from aic_collector.job_queue import next_sample_index as _next_idx
-        start_sfp = _next_idx(mgr_queue_root, "sfp")
-        start_sc = _next_idx(mgr_queue_root, "sc")
-
-        preview_parts = []
-        if mgr_sfp_count > 0:
-            preview_parts.append(
-                f"SFP: config_sfp_{start_sfp:04d} ~ {start_sfp + mgr_sfp_count - 1:04d}"
+    
+            strategy_opts = ["uniform", "lhs"]
+            mgr_param_strategy = st.selectbox(
+                "샘플링 전략",
+                strategy_opts,
+                index=0,
+                key="mgr_param_strategy",
+                disabled=team_widgets_locked,
+                help=(
+                    "pose 연속값(NIC/SC translation·yaw, gripper offset) 분포 전략. "
+                    "target·entity 개수는 적용 대상 아님.\n\n"
+                    "**uniform** — 각 샘플 독립 균등 난수 (기본).\n\n"
+                    "**lhs** — Latin Hypercube. 공간 채움 우수, 샘플 수 적을 때 유리. "
+                    "단 append 배치마다 독립 재추첨."
+                ),
             )
-        if mgr_sc_count > 0:
-            preview_parts.append(
-                f"SC: config_sc_{start_sc:04d} ~ {start_sc + mgr_sc_count - 1:04d}"
+    
+            _strategy_svg = render_sampling_strategy_svg(str(mgr_param_strategy))
+            st.components.v1.html(
+                f'<div style="display:flex;justify-content:center;padding:4px;">'
+                f'{_strategy_svg}</div>',
+                height=420,
+                scrolling=False,
             )
-        if preview_parts:
-            st.info("생성될 파일: " + " · ".join(preview_parts))
-        else:
-            st.info("생성할 count가 0입니다.")
-
-    # 생성 버튼 — slider가 min≤max를 구조적으로 보장하므로 추가 검증 불필요
-    total_new = mgr_sfp_count + mgr_sc_count
-    btn_disabled = total_new == 0
-    if st.button(
-        f"📁 큐에 추가 ({total_new}개 생성)",
-        type="primary",
-        disabled=btn_disabled,
-        key="mgr_generate",
-    ):
-        template = PROJECT_DIR / "configs/community_random_config.yaml"
-        if not template.exists():
-            st.error(f"템플릿 없음: {template}")
-        else:
-            # UI 값으로 sampler용 cfg 구성
-            training_cfg = {
-                "scene": {
-                    "nic_count_range": [int(mgr_nic_count_range[0]), int(mgr_nic_count_range[1])],
-                    "sc_count_range":  [int(mgr_sc_count_range[0]), int(mgr_sc_count_range[1])],
-                    "target_cycling":  bool(mgr_target_cycling),
-                },
-                "ranges": dict(user_ranges),
-                "param_strategy": str(mgr_param_strategy),
-            }
-            sampler_cfg = {"training": training_cfg}
-
-            ensure_queue_dirs(mgr_queue_root)
-            try:
-                written_all: list[Path] = []
-                if mgr_sfp_count > 0:
-                    plans = sample_scenes(
-                        sampler_cfg, "sfp", int(mgr_sfp_count), int(mgr_seed),
-                        start_index=int(start_sfp),
-                    )
-                    written_all += write_plans(plans, mgr_queue_root, template)
-                if mgr_sc_count > 0:
-                    plans = sample_scenes(
-                        sampler_cfg, "sc", int(mgr_sc_count), int(mgr_seed),
-                        start_index=int(start_sc),
-                    )
-                    written_all += write_plans(plans, mgr_queue_root, template)
-                st.success(
-                    f"✅ {len(written_all)}개 config를 pending/에 추가했습니다."
+    
+            # (label, key, (aic_min, aic_max), step, format, source_url)
+            # NIC translation/yaw·SC translation → task_board_description.md Zone 1/2
+            range_fields = [
+                ("NIC translation (m)", "nic_translation", (-0.0215, 0.0234), 0.0001, "%.4f", AIC_TASK_BOARD_URL),
+                ("NIC yaw (rad)",       "nic_yaw",         (-0.1745, 0.1745), 0.0010, "%.4f", AIC_TASK_BOARD_URL),
+                ("SC translation (m)",  "sc_translation",  (-0.06,   0.055),  0.0010, "%.4f", AIC_TASK_BOARD_URL),
+            ]
+            # Gripper ± 편차 → qualification_phase.md §1 "~2mm, ~0.04 rad"
+            # (label, key, aic_max, step, format, source_url)
+            spread_fields = [
+                ("Gripper x / y (±m)",   "gripper_xy",  0.002, 0.0001, "%.4f", AIC_QUAL_PHASE_URL),
+                ("Gripper z (±m)",       "gripper_z",   0.002, 0.0001, "%.4f", AIC_QUAL_PHASE_URL),
+                ("Gripper rpy (±rad)",   "gripper_rpy", 0.04,  0.0010, "%.4f", AIC_QUAL_PHASE_URL),
+            ]
+    
+            user_ranges: dict[str, Any] = {}
+    
+            st.markdown("**Range (min ~ max)** — 핸들 두 개로 범위 지정")
+            for label, key, (lo, hi), step, fmt, url in range_fields:
+                v = st.slider(
+                    label,
+                    min_value=float(lo), max_value=float(hi),
+                    value=(float(lo), float(hi)),
+                    step=float(step),
+                    format=fmt,
+                    key=f"mgr_range_{key}_range",
+                    disabled=team_widgets_locked,
+                    help=f"AIC 공식 허용: [{lo}, {hi}]  \n📖 [task_board_description.md]({url})",
                 )
-                with st.expander("📝 생성된 파일 목록"):
-                    for p in written_all:
-                        st.code(str(p.relative_to(PROJECT_DIR)), language=None)
-                st.rerun()
-            except Exception as e:
-                st.error(f"생성 실패: {type(e).__name__}: {e}")
-
-    # 큐 목록 — 테이블 + 선택 삭제 + Target 분포
-    st.divider()
-    st.markdown("### 📁 큐 목록")
-    if not mgr_queue_root.exists():
-        st.caption("큐 루트가 아직 존재하지 않습니다.")
-    else:
-        import pandas as pd
-        from datetime import datetime
-
-        rows: list[dict[str, Any]] = []
-        for tt in TASK_TYPES:
-            for state in QueueState:
-                for f in list_configs(mgr_queue_root, tt, state):
-                    stv = f.stat()
-                    rows.append({
-                        "파일명": f.name,
-                        "task": tt,
-                        "state": state.value,
-                        "size": stv.st_size,
-                        "수정일시": datetime.fromtimestamp(stv.st_mtime),
-                        "_path": str(f),
-                        "_mtime": stv.st_mtime,
-                    })
-
-        if not rows:
-            st.caption("큐가 비어있습니다.")
-        else:
-            df_all = pd.DataFrame(rows)
-
-            f_col1, f_col2 = st.columns(2)
-            with f_col1:
-                filter_tt = st.multiselect(
-                    "task 필터",
-                    list(TASK_TYPES),
-                    default=list(TASK_TYPES),
-                    key="mgr_list_filter_tt",
-                    help="아래 테이블에 표시할 task 종류 (실행 대상 필터가 아님).",
+                user_ranges[key] = [float(v[0]), float(v[1])]
+    
+            st.markdown("**Spread (nominal ± value)** — 그리퍼 offset 편차")
+            for label, key, aic_max, step, fmt, url in spread_fields:
+                v = st.slider(
+                    label,
+                    min_value=0.0, max_value=float(aic_max),
+                    value=float(aic_max),
+                    step=float(step),
+                    format=fmt,
+                    key=f"mgr_range_{key}_spread",
+                    disabled=team_widgets_locked,
+                    help=f"AIC 공식 허용: ± {aic_max}  \n📖 [qualification_phase.md §1]({url})",
                 )
-            with f_col2:
-                filter_state = st.multiselect(
-                    "state 필터",
-                    [s.value for s in QueueState],
-                    default=[s.value for s in QueueState],
-                    key="mgr_list_filter_state",
-                    help="아래 테이블에 표시할 state. pending/failed만 삭제 가능.",
-                )
-
-            df = df_all[
-                df_all["task"].isin(filter_tt)
-                & df_all["state"].isin(filter_state)
-            ].reset_index(drop=True)
-            df.insert(0, "#", range(1, len(df) + 1))
-
-            if df.empty:
-                st.caption("필터 조건에 맞는 파일이 없습니다.")
-            else:
-                event = st.dataframe(
-                    df[["#", "파일명", "task", "state", "size", "수정일시"]],
-                    selection_mode="multi-row",
-                    on_select="rerun",
-                    hide_index=True,
-                    width="stretch",
-                    key="mgr_list_table",
-                    column_config={
-                        "#": st.column_config.NumberColumn(width="small"),
-                        "수정일시": st.column_config.DatetimeColumn(
-                            format="YYYY-MM-DD HH:mm",
-                        ),
-                        "size": st.column_config.NumberColumn(format="%d B"),
-                    },
-                )
-                selected_rows: list[int] = list(event.selection.rows)
-
-                if selected_rows:
-                    sel_df = df.iloc[selected_rows]
-                    deletable = sel_df[sel_df["state"].isin(["pending", "failed"])]
-                    blocked = sel_df[~sel_df["state"].isin(["pending", "failed"])]
-
-                    info_parts = [f"선택 {len(sel_df)}개"]
-                    if len(blocked):
-                        info_parts.append(
-                            f"⚠ running/done {len(blocked)}개는 안전을 위해 삭제 불가 (제외)"
-                        )
-                    st.caption(" · ".join(info_parts))
-
-                    if len(deletable):
-                        with st.popover(f"🗑️ {len(deletable)}개 삭제"):
-                            st.warning(
-                                "pending/failed 파일을 삭제합니다. 되돌릴 수 없습니다."
-                            )
-                            with st.expander("삭제 대상 목록", expanded=False):
-                                for name in deletable["파일명"].tolist()[:100]:
-                                    st.code(name, language=None)
-                                if len(deletable) > 100:
-                                    st.caption(f"… 외 {len(deletable) - 100}개")
-                            if st.button(
-                                "삭제 실행",
-                                type="primary",
-                                key="mgr_list_delete_confirm",
-                            ):
-                                deleted = 0
-                                for p in deletable["_path"]:
-                                    try:
-                                        Path(p).unlink()
-                                        deleted += 1
-                                    except FileNotFoundError:
-                                        pass
-                                st.success(f"{deleted}개 삭제됨")
-                                st.rerun()
-
-            # Target 분포 (pending 한정) — 파일 파싱 비용 있어 expander로
-            with st.expander("🎯 Target 분포 (pending 기준)", expanded=False):
-                pending_df = df_all[df_all["state"] == "pending"]
-                if pending_df.empty:
-                    st.caption("pending 파일이 없습니다.")
+                user_ranges[key] = float(v)
+    
+            # 시각 미리보기 — 선택 범위 vs AIC 최대 허용
+            _params_svg = render_parameters_svg(user_ranges)
+            st.components.v1.html(
+                f'<div style="display:flex;justify-content:center;padding:4px;">'
+                f'{_params_svg}</div>',
+                height=680,
+                scrolling=True,
+            )
+    
+            # 변경 여부 판정 (모든 값이 AIC 공식 기본값=최대 범위와 같은지)
+            def _tol_eq(a, b, tol: float = 1e-9) -> bool:
+                if isinstance(a, (list, tuple)):
+                    return all(abs(x - y) <= tol for x, y in zip(a, b))
+                return abs(a - b) <= tol
+    
+            ranges_is_custom = not all(
+                _tol_eq(user_ranges[k], MGR_DEFAULT_RANGES[k])
+                for k in MGR_DEFAULT_RANGES
+            )
+    
+            col_badge, col_reset = st.columns([3, 1])
+            with col_badge:
+                if ranges_is_custom:
+                    st.info("⚙️ 사용자 정의 범위 — 기본값보다 좁게 설정됨")
                 else:
-                    @st.cache_data(show_spinner=False)
-                    def _parse_target(
-                        path_str: str, mtime: float
-                    ) -> tuple[str, str] | None:
-                        try:
-                            with open(path_str) as fh:
-                                cfg = yaml.safe_load(fh)
-                            for _, v in (cfg.get("trials", {}) or {}).items():
-                                t1 = (v or {}).get("tasks", {}).get("task_1", {}) or {}
-                                tm = t1.get("target_module_name", "")
-                                pn = t1.get("port_name", "")
-                                if tm and pn:
-                                    return tm, pn
-                            return None
-                        except Exception:
-                            return None
-
-                    tgt_rows: list[dict[str, Any]] = []
-                    for _, r in pending_df.iterrows():
-                        tgt = _parse_target(r["_path"], r["_mtime"])
-                        if tgt is None:
-                            continue
-                        tm, pn = tgt
-                        tgt_rows.append({
-                            "task": r["task"],
-                            "target": f"{tm} / {pn}",
-                        })
-
-                    if not tgt_rows:
-                        st.caption("target 정보를 읽을 수 있는 config가 없습니다.")
-                    else:
-                        tgt_df = pd.DataFrame(tgt_rows)
-                        for tt in TASK_TYPES:
-                            sub = tgt_df[tgt_df["task"] == tt]
-                            if sub.empty:
-                                continue
-                            counts_sr = (
-                                sub["target"].value_counts().sort_index()
-                            )
-                            st.markdown(f"**{tt.upper()}** · 총 {len(sub)}개")
-                            st.bar_chart(counts_sr, horizontal=True)
-
-# --- 작업 실행 탭 (Phase 2b — Consumer) ---
-with tab_execute:
-    from aic_collector.job_queue import (
-        QueueState as _QS,
-        TASK_TYPES as _TT,
-        all_counts as _all_counts,
-        recover_running_to_pending as _recover,
-    )
-
-    def _worker_status() -> dict | None:
-        """워커 상태: 실행 중이면 dict, 아니면 None."""
-        if not WORKER_PID_FILE.exists():
-            return None
-        try:
-            pid = int(WORKER_PID_FILE.read_text().strip())
-        except Exception:
-            return None
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return None
-        state = {}
-        if WORKER_STATE_FILE.exists():
-            try:
-                state = json.loads(WORKER_STATE_FILE.read_text())
-            except Exception:
-                state = {}
-        state["pid"] = pid
-        state["running"] = True
-        return state
-
-    def _worker_start(
-        root: str,
-        task: str,
-        limit: int | None,
-        policy: str,
-        act_model_path: str | None,
-        ground_truth: bool,
-        use_compressed: bool,
-        collect_episode: bool,
-        output_root: str,
-        timeout: int | None,
-        recover_first: bool,
-        policy_sfp: str | None = None,
-        policy_sc: str | None = None,
-    ) -> None:
-        """aic-collector-worker를 백그라운드 subprocess로 기동."""
-        if _worker_status():
-            raise RuntimeError("이미 워커가 실행 중입니다. 중지 후 다시 시작하세요.")
-
-        WORKER_LOG_FILE.write_text("")
-        cmd = [
-            "uv", "run", "aic-collector-worker",
-            "--root", root,
-            "--task", task,
-            "--policy", policy,
-            "--ground-truth", str(ground_truth).lower(),
-            "--use-compressed", str(use_compressed).lower(),
-            "--collect-episode", str(collect_episode).lower(),
-            "--output-root", output_root,
-            "--log", str(WORKER_LOG_FILE),
-        ]
-        if limit is not None and limit > 0:
-            cmd += ["--limit", str(limit)]
-        if timeout is not None and timeout > 0:
-            cmd += ["--timeout", str(timeout)]
-        if act_model_path:
-            cmd += ["--act-model-path", act_model_path]
-        if policy_sfp:
-            cmd += ["--policy-sfp", policy_sfp]
-        if policy_sc:
-            cmd += ["--policy-sc", policy_sc]
-        if recover_first:
-            cmd += ["--recover"]
-
-        # 워커가 webapp이 띄운 영구 Prefect 서버에 연결되도록 env 주입.
-        # 이게 없으면 매 flow run마다 ephemeral 임시 서버가 띄워져 UI에 안 보임.
-        worker_env = os.environ.copy()
-        worker_env["PREFECT_API_URL"] = f"{PREFECT_SERVER_URL}/api"
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=open(WORKER_LOG_FILE, "a"),
-            stderr=subprocess.STDOUT,
-            cwd=str(PROJECT_DIR),
-            start_new_session=True,
-            env=worker_env,
-        )
-        WORKER_PID_FILE.write_text(str(proc.pid))
-
-    def _worker_stop() -> bool:
-        ws = _worker_status()
-        if not ws:
-            return False
-        pid = ws["pid"]
-        try:
-            import signal as _signal
-            os.killpg(os.getpgid(pid), _signal.SIGTERM)
-            time.sleep(1)
-            try:
-                os.killpg(os.getpgid(pid), _signal.SIGKILL)
-            except OSError:
-                pass
-            return True
-        except OSError:
-            return False
-
-    st.subheader("🏃 작업 실행")
-    st.caption(
-        "pending/ 큐를 소비하는 Consumer 워커를 제어합니다. "
-        "정상 종료는 done/으로, 실패는 failed/로 이동합니다. "
-        "실시간 모니터링은 **Prefect 대시보드**를 참고하세요."
-    )
-
-    # 큐 루트 — 작업 관리 탭과 shared_queue_root로 양방향 싱크
-    if "shared_queue_root" not in st.session_state:
-        st.session_state["shared_queue_root"] = str(PROJECT_DIR / "configs/train")
-    if st.session_state.get("exec_queue_root") != st.session_state["shared_queue_root"]:
-        st.session_state["exec_queue_root"] = st.session_state["shared_queue_root"]
-
-    def _exec_queue_root_changed() -> None:
-        st.session_state["shared_queue_root"] = st.session_state["exec_queue_root"]
-
-    exec_queue_root_str = st.text_input(
-        "큐 루트",
-        key="exec_queue_root",
-        help="작업 관리 탭과 값이 공유됩니다.",
-        on_change=_exec_queue_root_changed,
-    )
-    exec_queue_root = Path(exec_queue_root_str)
-
-    # 큐 현황 (작업 관리 탭과 동일한 가로 스택바)
-    st.markdown("### 📊 큐 현황")
-    if exec_queue_root.exists():
-        ecounts = _all_counts(exec_queue_root)
-        render_queue_status_block(ecounts, _TT)
-    else:
-        st.caption("큐 루트가 존재하지 않습니다.")
-
-    st.divider()
-
-    def _render_running_body() -> None:
-        """실행 중 상태 렌더 — fragment에서 3초마다 재호출."""
-        from datetime import datetime as _dt
-        current_w = _worker_status()
-        if current_w is None:
-            # 워커가 방금 종료 → 전체 페이지 리런으로 idle 뷰 전환
-            st.rerun(scope="app")
-            return
-
-        st.success(f"● 실행 중 (PID: {current_w['pid']})")
-        processed = int(current_w.get("processed", 0))
-        done_c = int(current_w.get("done", 0))
-        fail_c = int(current_w.get("failed", 0))
-        total_at_start = int(current_w.get("total_at_start", 0) or 0)
-
-        if total_at_start > 0:
-            ratio = min(1.0, processed / total_at_start)
-            st.progress(
-                ratio,
-                text=f"처리 {processed} / {total_at_start} "
-                     f"(done {done_c}, failed {fail_c})",
-            )
-            try:
-                started_iso = current_w.get("started_at")
-                if started_iso and processed > 0:
-                    elapsed = (
-                        _dt.now() - _dt.fromisoformat(started_iso)
-                    ).total_seconds()
-                    per_item = elapsed / processed
-                    remaining = max(0, total_at_start - processed)
-                    eta_sec = int(per_item * remaining)
-                    eta_h, _r = divmod(eta_sec, 3600)
-                    eta_m, eta_s = divmod(_r, 60)
-                    eta_str = (
-                        f"{eta_h}h {eta_m}m" if eta_h else
-                        f"{eta_m}m {eta_s}s" if eta_m else f"{eta_s}s"
-                    )
-                    st.caption(
-                        f"⏱ 평균 {per_item:.1f}s/config · 남은 "
-                        f"{remaining}개 · ETA ~{eta_str}"
-                    )
-            except Exception:
-                pass
-        else:
-            st.write(
-                f"처리 {processed}개 (done {done_c}, failed {fail_c})"
-            )
-
-        cur = current_w.get("current")
-        if cur:
-            cur_started = current_w.get("current_started_at")
-            dur_str = ""
-            if cur_started:
-                try:
-                    dur_sec = int(
-                        (_dt.now() - _dt.fromisoformat(cur_started)).total_seconds()
-                    )
-                    dur_str = f" · {dur_sec}s 경과"
-                except Exception:
-                    pass
-            st.write(f"🔹 현재 실행: `{cur}`{dur_str}")
-
-        recent = current_w.get("recent") or []
-        if recent:
-            with st.expander(f"📋 최근 처리 {len(recent)}개", expanded=True):
-                for r in recent:
-                    icon = "✅" if r.get("result") == "done" else "❌"
-                    st.write(
-                        f"{icon} `{r.get('name', '?')}` · "
-                        f"{r.get('duration_sec', 0)}s"
-                    )
-
-        col_stop, col_refresh = st.columns([1, 1])
-        with col_stop:
-            if st.button("⏹ 워커 정지", key="exec_stop"):
-                if _worker_stop():
-                    WORKER_PID_FILE.unlink(missing_ok=True)
-                    st.success("워커 중지됨")
-                    st.rerun(scope="app")
-                else:
-                    st.warning("워커 프로세스를 찾지 못했습니다.")
-        with col_refresh:
-            if st.button("🔄 상태 새로고침", key="exec_refresh_running"):
-                st.rerun(scope="app")
-
-    # 워커 상태 — 실행 중이면 3초마다 자동 갱신되는 fragment
-    st.markdown("### ⚙️ 워커 상태")
-    w = _worker_status()
-    if w:
-        st.caption("⟳ 실행 중 — 3초마다 자동 갱신")
-
-        @st.fragment(run_every=3)
-        def _live_running_status() -> None:
-            _render_running_body()
-
-        _live_running_status()
-    else:
-        # 마지막 종료 상태
-        if WORKER_STATE_FILE.exists():
-            try:
-                last = json.loads(WORKER_STATE_FILE.read_text())
-                if last.get("status") in ("completed", "interrupted"):
-                    st.info(
-                        f"마지막 실행: {last.get('status')} · "
-                        f"processed {last.get('processed', 0)} "
-                        f"(done {last.get('done', 0)}, failed {last.get('failed', 0)}, "
-                        f"{last.get('elapsed_sec', 0)}s)"
-                    )
-            except Exception:
-                pass
-
-        # 실행 설정
-        st.markdown("### 🚀 실행 설정")
-        col_task, col_limit = st.columns([1, 1])
-        # ── 기본 (자주 조절) ──
-        with col_task:
-            exec_task = st.selectbox(
-                "task 필터", ["all", "sfp", "sc"], index=0, key="exec_task",
-                help="all: sfp→sc 순서로 전부 소비. sfp/sc: 해당 task만.",
-            )
-        with col_limit:
-            exec_limit = st.number_input(
-                "limit (0=무제한)", min_value=0, max_value=100000,
-                value=5, step=1, key="exec_limit",
-                help="최대 처리 config 수. 0이면 큐가 빌 때까지.",
-            )
-
-        _policy_options = policies or ["cheatcode"]
-        _policy_default_idx = (
-            _policy_options.index("cheatcode") if "cheatcode" in _policy_options else 0
-        )
-        _split_active = st.session_state.get("exec_policy_split", False)
-        _policy_dir_lines = [
-            f"- `{PIXI_POLICIES_DIR}` "
-            f"({'✅ 존재' if PIXI_POLICIES_DIR.exists() else '❌ 없음'})",
-            f"- `{POLICIES_DIR}` "
-            f"({'✅ 존재' if POLICIES_DIR.exists() else '❌ 없음'})",
-        ]
-        _policy_dir_help = "Policy 탐색 경로:\n" + "\n".join(_policy_dir_lines)
-        exec_policy = st.selectbox(
-            "Policy (기본)" + (" — 분리 모드 사용 중" if _split_active else ""),
-            _policy_options,
-            index=_policy_default_idx,
-            key="exec_policy",
-            disabled=_split_active,
-            help=(
-                "양쪽 task에 공통 적용되는 기본 policy. "
-                "아래 체크박스로 SFP/SC를 분리할 수 있습니다.\n\n"
-                + _policy_dir_help
-            ),
-        )
-        st.caption("📁 Policy 탐색 경로  \n" + "  \n".join(_policy_dir_lines))
-        exec_policy_split = st.checkbox(
-            "SFP / SC에 다른 policy 사용",
-            value=False,
-            key="exec_policy_split",
-            help=(
-                "on 시 SFP·SC 각각 policy를 따로 지정. 기본 Policy는 비활성화됩니다. "
-                "예: 'SFP=act (학습된 모델), SC=cheatcode'."
-            ),
-        )
-        exec_policy_sfp = None
-        exec_policy_sc = None
-        if exec_policy_split:
-            col_ps, col_pc = st.columns(2)
-            with col_ps:
-                exec_policy_sfp = st.selectbox(
-                    "SFP policy", _policy_options,
-                    index=_policy_options.index(exec_policy)
-                    if exec_policy in _policy_options else _policy_default_idx,
-                    key="exec_policy_sfp",
-                    help="sfp task 전용 policy. 워커 내부에서 task별로 dispatch.",
-                )
-            with col_pc:
-                exec_policy_sc = st.selectbox(
-                    "SC policy", _policy_options,
-                    index=_policy_options.index(exec_policy)
-                    if exec_policy in _policy_options else _policy_default_idx,
-                    key="exec_policy_sc",
-                    help="sc task 전용 policy. 워커 내부에서 task별로 dispatch.",
-                )
-
-        # ── 고급 (첫 설정 후 보통 고정) ──
+                    st.success("✅ AIC 공식 기본값 (최대 허용 범위)")
+            with col_reset:
+                if st.button("🔄 범위 리셋", key="mgr_reset_ranges", disabled=team_widgets_locked):
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("mgr_range_"):
+                            del st.session_state[k]
+                    st.rerun()
+    
+        # ⚙️ 고급 — 재현용 seed
         with st.expander("⚙️ 고급", expanded=False):
-            col_gt, col_comp, col_ep = st.columns(3)
-            with col_gt:
-                exec_ground_truth = st.checkbox(
-                    "ground_truth", value=True, key="exec_gt",
-                    help="시뮬레이터의 정확한 TF 사용 (수집용). 끄면 평가 모드.",
-                )
-            with col_comp:
-                exec_use_compressed = st.checkbox(
-                    "use_compressed", value=True, key="exec_comp",
-                    help="카메라 이미지 JPEG 압축 (~3GB/run). 끄면 raw (~58GB/run).",
-                )
-            with col_ep:
-                exec_collect_episode = st.checkbox(
-                    "collect_episode", value=False, key="exec_ep",
-                    help="이미지+npy를 episode 디렉토리에 저장. 끄면 bag+scoring만.",
-                )
-
-            col_timeout, col_recover = st.columns([1, 1])
-            with col_timeout:
-                exec_timeout = st.number_input(
-                    "timeout (초, 0=무제한)", min_value=0, max_value=3600,
-                    value=300, step=30, key="exec_timeout",
-                    help="config 1개당 최대 실행 시간. 넘으면 failed로 이동.",
-                )
-            with col_recover:
-                exec_recover = st.checkbox(
-                    "시작 전 running/→pending 복구",
-                    value=True, key="exec_recover",
-                    help="비정상 종료로 남은 파일을 복구합니다.",
-                )
-
-            # Output root — 결과 탭과 세션으로 공유
-            if "shared_output_root" not in st.session_state:
-                st.session_state["shared_output_root"] = str(OUTPUT_ROOT)
-            if st.session_state.get("exec_output_root") != st.session_state["shared_output_root"]:
-                st.session_state["exec_output_root"] = st.session_state["shared_output_root"]
-
-            def _exec_output_root_changed() -> None:
-                st.session_state["shared_output_root"] = st.session_state["exec_output_root"]
-
-            exec_output_root = st.text_input(
-                "Output root",
-                key="exec_output_root",
-                help="실행 결과(bag, scoring)가 저장되는 루트 경로. 결과 탭과 값이 공유됩니다.",
-                on_change=_exec_output_root_changed,
+            mgr_seed = st.number_input(
+                "Seed",
+                min_value=0, value=42,
+                key="mgr_seed",
+                disabled=team_widgets_locked,
+                help="재현용 base seed. 같은 seed + 같은 설정 → 같은 config 생성.",
             )
-
-            act_model_path = None
-            _uses_act = exec_policy in ("act", "hybrid") or (
-                exec_policy_split and (
-                    (exec_policy_sfp in ("act", "hybrid"))
-                    or (exec_policy_sc in ("act", "hybrid"))
-                )
-            )
-            if _uses_act:
-                _default_act = str(
-                    Path.home()
-                    / "ws_aic/src/aic/outputs/train/act_aic_v1_backup/checkpoints/last/pretrained_model"
-                )
-                act_model_path = st.text_input(
-                    "ACT 모델 경로", value=_default_act, key="exec_act_model",
-                    help="act/hybrid 선택 시 사용. SFP·SC 공용.",
-                )
-
-        if st.button("▶ 워커 시작", type="primary", key="exec_start"):
-            if not exec_queue_root.exists():
-                st.error(f"큐 루트가 존재하지 않습니다: {exec_queue_root}")
+    
+        # Scene 사용자 정의 여부 (Scene 섹션 하단에 뱃지)
+        scene_is_custom = (
+            tuple(mgr_nic_count_range) != MGR_DEFAULT_NIC_COUNT_RANGE
+            or tuple(mgr_sc_count_range) != MGR_DEFAULT_SC_COUNT_RANGE
+            or mgr_target_cycling != MGR_DEFAULT_TARGET_CYCLING
+        )
+        if scene_is_custom:
+            if mgr_target_cycling:
+                st.caption("🎬 Scene: 사용자 정의 설정")
             else:
+                st.caption(
+                    "🎬 Scene: 사용자 정의 설정 · ⚠ target cycling off — "
+                    "개수 적을 때 target 분포 불균등"
+                )
+    
+        # 생성될 번호 미리보기 — 항상 기존 큐 번호에 이어서 생성 (덮어쓰기 방지)
+        start_sfp = 0
+        start_sc = 0
+        if team_widgets_locked and team_state is not None:
+            if team_state["preview_filename"] is None:
+                st.info("생성 가능한 팀 슬롯이 없습니다.")
+            else:
+                st.info(
+                    "생성될 파일: "
+                    f"{team_state['preview_filename']} "
+                    f"(start index {int(team_state['next_start_index'])})"
+                )
+        elif mgr_queue_root.exists():
+            from aic_collector.job_queue import next_sample_index as _next_idx
+            start_sfp = _next_idx(mgr_queue_root, "sfp")
+            start_sc = _next_idx(mgr_queue_root, "sc")
+    
+            preview_parts = []
+            if mgr_sfp_count > 0:
+                preview_parts.append(
+                    f"SFP: config_sfp_{start_sfp:04d} ~ {start_sfp + mgr_sfp_count - 1:04d}"
+                )
+            if mgr_sc_count > 0:
+                preview_parts.append(
+                    f"SC: config_sc_{start_sc:04d} ~ {start_sc + mgr_sc_count - 1:04d}"
+                )
+            if preview_parts:
+                st.info("생성될 파일: " + " · ".join(preview_parts))
+            else:
+                st.info("생성할 count가 0입니다.")
+    
+        # 생성 버튼 — slider가 min≤max를 구조적으로 보장하므로 추가 검증 불필요
+        total_new = int(mgr_sfp_count) if team_widgets_locked else int(mgr_sfp_count) + int(mgr_sc_count)
+        btn_disabled = total_new == 0 or team_mode_error is not None
+        if st.button(
+            f"📁 큐에 추가 ({total_new}개 생성)",
+            type="primary",
+            disabled=btn_disabled,
+            key="mgr_generate",
+        ):
+            template = PROJECT_DIR / "configs/community_random_config.yaml"
+            if not template.exists():
+                st.error(f"템플릿 없음: {template}")
+            elif team_widgets_locked and team_preset is not None and mgr_team_member_id is not None:
                 try:
-                    _worker_start(
-                        root=str(exec_queue_root),
-                        task=exec_task,
-                        limit=int(exec_limit) if int(exec_limit) > 0 else None,
-                        policy=exec_policy,
-                        policy_sfp=exec_policy_sfp,
-                        policy_sc=exec_policy_sc,
-                        act_model_path=act_model_path,
-                        ground_truth=exec_ground_truth,
-                        use_compressed=exec_use_compressed,
-                        collect_episode=exec_collect_episode,
-                        output_root=str(exec_output_root),
-                        timeout=int(exec_timeout) if int(exec_timeout) > 0 else None,
-                        recover_first=exec_recover,
+                    submit_preset = build_team_submit_preset(
+                        team_preset,
+                        sfp_count=int(mgr_sfp_count),
                     )
-                    st.success("워커 시작됨. 아래 로그에서 진행 확인.")
-                    time.sleep(1)
+                    result = submit_team_claim(
+                        submit_preset,
+                        member_id=mgr_team_member_id,
+                        task_type="sfp",
+                        queue_root=mgr_queue_root,
+                        ledger_path=LEDGER_PATH,
+                        template_path=template,
+                    )
+                    st.success(
+                        f"팀 claim 완료: member={mgr_team_member_id}, start_index={result.start_index}"
+                    )
+                    st.rerun()
+                except SlotExhausted as exc:
+                    st.error(f"팀 슬롯이 모두 소진되었습니다: {exc}")
+                except Exception as exc:
+                    st.error(f"팀 claim 실패 (롤백 확인 필요): {type(exc).__name__}: {exc}")
+            else:
+                # UI 값으로 sampler용 cfg 구성
+                training_cfg = {
+                    "scene": {
+                        "nic_count_range": [int(mgr_nic_count_range[0]), int(mgr_nic_count_range[1])],
+                        "sc_count_range":  [int(mgr_sc_count_range[0]), int(mgr_sc_count_range[1])],
+                        "target_cycling":  bool(mgr_target_cycling),
+                    },
+                    "ranges": dict(user_ranges),
+                    "param_strategy": str(mgr_param_strategy),
+                }
+                sampler_cfg = {"training": training_cfg}
+    
+                ensure_queue_dirs(mgr_queue_root)
+                try:
+                    written_all: list[Path] = []
+                    if mgr_sfp_count > 0:
+                        plans = sample_scenes(
+                            sampler_cfg, "sfp", int(mgr_sfp_count), int(mgr_seed),
+                            start_index=int(start_sfp),
+                        )
+                        written_all += write_plans(plans, mgr_queue_root, template)
+                    if mgr_sc_count > 0:
+                        plans = sample_scenes(
+                            sampler_cfg, "sc", int(mgr_sc_count), int(mgr_seed),
+                            start_index=int(start_sc),
+                        )
+                        written_all += write_plans(plans, mgr_queue_root, template)
+                    st.success(
+                        f"✅ {len(written_all)}개 config를 pending/에 추가했습니다."
+                    )
+                    with st.expander("📝 생성된 파일 목록"):
+                        for p in written_all:
+                            st.code(str(p.relative_to(PROJECT_DIR)), language=None)
                     st.rerun()
                 except Exception as e:
-                    st.error(f"워커 시작 실패: {type(e).__name__}: {e}")
-
-        # 수동 복구 (워커 안 켜고 pending 복구만)
-        if exec_queue_root.exists():
-            running_total = sum(_all_counts(exec_queue_root)[t].running for t in _TT)
-            if running_total > 0:
-                if st.button(f"↩ running/ {running_total}개 → pending/ 복구 (워커 시작 없이)",
-                             key="exec_manual_recover"):
-                    moved_total = 0
-                    for tt in _TT:
-                        moved_total += _recover(exec_queue_root, tt)
-                    st.success(f"{moved_total}개 복구됨")
-                    st.rerun()
-
-    # 실시간 로그
-    st.divider()
-    st.markdown("### 📜 워커 로그")
-
-    # 툴바 (검색·다운로드·클리어) — auto-refresh 밖
-    col_search, col_dl, col_clear = st.columns([4, 1, 1])
-    with col_search:
-        exec_log_search = st.text_input(
-            "🔍 검색",
-            key="exec_log_search",
-            placeholder="🔍 substring 검색 (대소문자 무시) — 예: ERROR, fail, config_sfp_0003",
-            label_visibility="collapsed",
-        )
-    with col_dl:
-        try:
-            _full_log = WORKER_LOG_FILE.read_text() if WORKER_LOG_FILE.exists() else ""
-        except Exception:
-            _full_log = ""
-        from datetime import datetime as _dt_dl
-        st.download_button(
-            "⬇ 다운로드",
-            data=_full_log or "(empty)\n",
-            file_name=f"worker_log_{_dt_dl.now().strftime('%Y%m%d_%H%M%S')}.log",
-            mime="text/plain",
-            use_container_width=True,
-            disabled=not _full_log,
-            key="exec_log_dl",
-        )
-    with col_clear:
-        with st.popover("🗑 비우기", use_container_width=True):
-            st.warning("로그 파일 내용을 삭제합니다.")
-            if st.button("실행", key="exec_log_clear_confirm", type="primary"):
-                if WORKER_LOG_FILE.exists():
-                    WORKER_LOG_FILE.write_text("")
-                st.rerun(scope="app")
-
-    def _render_log_body() -> None:
-        import html as _html
-        import re as _re
-        if not WORKER_LOG_FILE.exists():
-            st.caption("(아직 실행 이력 없음)")
-            return
-        try:
-            log_text = WORKER_LOG_FILE.read_text()
-        except Exception:
-            log_text = ""
-        if not log_text.strip():
-            st.caption("(로그 비어있음)")
-            return
-
-        all_lines = log_text.splitlines()
-        search = (st.session_state.get("exec_log_search") or "").strip()
-        if search:
-            filtered = [ln for ln in all_lines if search.lower() in ln.lower()]
+                    st.error(f"생성 실패: {type(e).__name__}: {e}")
+    
+        # 큐 목록 — 테이블 + 선택 삭제 + Target 분포
+        st.divider()
+        st.markdown("### 📁 큐 목록")
+        if not mgr_queue_root.exists():
+            st.caption("큐 루트가 아직 존재하지 않습니다.")
         else:
-            filtered = all_lines
-        display = filtered[-200:]
-
-        # 레벨 색상
-        pat_err = _re.compile(r"\b(ERROR|FAIL|FATAL|Traceback|Exception)\b", _re.IGNORECASE)
-        pat_warn = _re.compile(r"\b(WARN|WARNING)\b", _re.IGNORECASE)
-        pat_done = _re.compile(r"\[done ?\]")
-        pat_fail_tag = _re.compile(r"\[fail ?\]")
-
-        rendered: list[str] = []
-        for ln in display:
-            esc = _html.escape(ln) or "&nbsp;"
-            if pat_err.search(ln):
-                color = "#dc3545"
-                bg = "rgba(220,53,69,0.08)"
-            elif pat_warn.search(ln):
-                color = "#b8860b"
-                bg = "rgba(184,134,11,0.08)"
-            elif pat_fail_tag.search(ln):
-                color = "#dc3545"
-                bg = "transparent"
-            elif pat_done.search(ln):
-                color = "#198754"
-                bg = "transparent"
+            import pandas as pd
+            from datetime import datetime
+    
+            rows: list[dict[str, Any]] = []
+            for tt in TASK_TYPES:
+                for state in QueueState:
+                    for f in list_configs(mgr_queue_root, tt, state):
+                        stv = f.stat()
+                        rows.append({
+                            "파일명": f.name,
+                            "task": tt,
+                            "state": state.value,
+                            "size": stv.st_size,
+                            "수정일시": datetime.fromtimestamp(stv.st_mtime),
+                            "_path": str(f),
+                            "_mtime": stv.st_mtime,
+                        })
+    
+            if not rows:
+                st.caption("큐가 비어있습니다.")
             else:
-                color = "inherit"
-                bg = "transparent"
-            rendered.append(
-                f'<div style="color:{color};background:{bg};'
-                f'white-space:pre-wrap;word-break:break-all;'
-                f'padding:0 4px;">{esc}</div>'
-            )
-        body_html = "".join(rendered)
-        st.markdown(
-            f'<div style="background:#0b1021;color:#e7eaf6;padding:10px;'
-            f'border-radius:6px;max-height:400px;overflow:auto;'
-            f'font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;'
-            f'line-height:1.45;">{body_html}</div>',
-            unsafe_allow_html=True,
-        )
-
-        filter_note = f" · 필터 '{search}'" if search else ""
-        st.caption(f"표시: {len(display)}/{len(filtered)}줄{filter_note}")
-
-    # 로그 본문 — 워커 실행 중에만 3초마다 자동 갱신
-    _log_refresh = 3 if _worker_status() else None
-
-    @st.fragment(run_every=_log_refresh)
-    def _live_log() -> None:
-        _render_log_body()
-
-    _live_log()
-
-    st.caption(
-        "실시간 상세 로그는 Prefect 대시보드에서 확인할 수 있습니다: "
-        f"[Open Prefect]({get_prefect_ui_url()})"
-    )
-
-# --- 결과 탭 ---
-with tab_results:
-    st.subheader("수집 결과")
-
-    # 저장 경로 — 작업 실행 탭과 세션으로 공유
-    if "shared_output_root" not in st.session_state:
-        st.session_state["shared_output_root"] = str(OUTPUT_ROOT)
-    if st.session_state.get("result_output_root") != st.session_state["shared_output_root"]:
-        st.session_state["result_output_root"] = st.session_state["shared_output_root"]
-
-    def _result_output_root_changed() -> None:
-        st.session_state["shared_output_root"] = st.session_state["result_output_root"]
-
-    result_output_root_str = st.text_input(
-        "📁 저장 경로",
-        key="result_output_root",
-        help="run_*/trial_* 결과를 스캔할 루트. 작업 실행 탭과 값이 공유됩니다.",
-        on_change=_result_output_root_changed,
-    )
-    result_output_root = Path(result_output_root_str).expanduser()
-    if not result_output_root.exists():
-        st.caption(f"⚠ 경로가 존재하지 않습니다: `{result_output_root}`")
-
-    col_refresh, col_prefect = st.columns([1, 2])
-    with col_refresh:
-        if st.button("새로고침", key="refresh_results"):
-            pass  # rerun 트리거
-    with col_prefect:
-        st.link_button(
-            "🔍 Prefect 대시보드",
-            get_prefect_ui_url(),
-            help="과거 수집 실행 이력과 task별 상세 로그 확인",
-        )
-
-    rows = load_results(result_output_root)
-    if rows:
-        import pandas as pd
-        df = pd.DataFrame(rows)
-
-        # 요약
-        success_count = (df["success"] == "✅").sum()
-        total = len(df)
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric("총 Trials", total)
-        col_b.metric("성공", f"{success_count} ({100*success_count/total:.0f}%)")
-        col_c.metric("평균 점수", f"{df['score'].mean():.1f}")
-
-        # 테이블
-        st.dataframe(df, width="stretch", hide_index=True)
-
-        # 검증 경고
-        validations = load_run_validations(result_output_root)
-        if validations:
-            with st.expander(f"⚠️  검증 경고 ({len(validations)}개 run)", expanded=False):
-                for v in validations:
-                    st.markdown(
-                        f"**{v['run']}** — {v['passed']}/{v['total']} 체크 통과"
+                df_all = pd.DataFrame(rows)
+    
+                f_col1, f_col2 = st.columns(2)
+                with f_col1:
+                    filter_tt = st.multiselect(
+                        "task 필터",
+                        list(TASK_TYPES),
+                        default=list(TASK_TYPES),
+                        key="mgr_list_filter_tt",
+                        help="아래 테이블에 표시할 task 종류 (실행 대상 필터가 아님).",
                     )
-                    for w in v["warnings"]:
-                        st.markdown(f"  - ⚠️ {w}")
-
-        # CSV 다운로드 + 삭제
-        col_dl, col_del = st.columns(2)
-        with col_dl:
-            csv_data = df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "📥 결과 CSV 다운로드",
-                data=csv_data,
-                file_name="aic_collection_results.csv",
-                mime="text/csv",
+                with f_col2:
+                    filter_state = st.multiselect(
+                        "state 필터",
+                        [s.value for s in QueueState],
+                        default=[s.value for s in QueueState],
+                        key="mgr_list_filter_state",
+                        help="아래 테이블에 표시할 state. pending/failed만 삭제 가능.",
+                    )
+    
+                df = df_all[
+                    df_all["task"].isin(filter_tt)
+                    & df_all["state"].isin(filter_state)
+                ].reset_index(drop=True)
+                df.insert(0, "#", range(1, len(df) + 1))
+    
+                if df.empty:
+                    st.caption("필터 조건에 맞는 파일이 없습니다.")
+                else:
+                    event = st.dataframe(
+                        df[["#", "파일명", "task", "state", "size", "수정일시"]],
+                        selection_mode="multi-row",
+                        on_select="rerun",
+                        hide_index=True,
+                        width="stretch",
+                        key="mgr_list_table",
+                        column_config={
+                            "#": st.column_config.NumberColumn(width="small"),
+                            "수정일시": st.column_config.DatetimeColumn(
+                                format="YYYY-MM-DD HH:mm",
+                            ),
+                            "size": st.column_config.NumberColumn(format="%d B"),
+                        },
+                    )
+                    selected_rows: list[int] = list(event.selection.rows)
+    
+                    if selected_rows:
+                        sel_df = df.iloc[selected_rows]
+                        deletable = sel_df[sel_df["state"].isin(["pending", "failed"])]
+                        blocked = sel_df[~sel_df["state"].isin(["pending", "failed"])]
+    
+                        info_parts = [f"선택 {len(sel_df)}개"]
+                        if len(blocked):
+                            info_parts.append(
+                                f"⚠ running/done {len(blocked)}개는 안전을 위해 삭제 불가 (제외)"
+                            )
+                        st.caption(" · ".join(info_parts))
+    
+                        if len(deletable):
+                            with st.popover(f"🗑️ {len(deletable)}개 삭제"):
+                                st.warning(
+                                    "pending/failed 파일을 삭제합니다. 되돌릴 수 없습니다."
+                                )
+                                with st.expander("삭제 대상 목록", expanded=False):
+                                    for name in deletable["파일명"].tolist()[:100]:
+                                        st.code(name, language=None)
+                                    if len(deletable) > 100:
+                                        st.caption(f"… 외 {len(deletable) - 100}개")
+                                if st.button(
+                                    "삭제 실행",
+                                    type="primary",
+                                    key="mgr_list_delete_confirm",
+                                ):
+                                    deleted = 0
+                                    for p in deletable["_path"]:
+                                        try:
+                                            Path(p).unlink()
+                                            deleted += 1
+                                        except FileNotFoundError:
+                                            pass
+                                    st.success(f"{deleted}개 삭제됨")
+                                    st.rerun()
+    
+                # Target 분포 (pending 한정) — 파일 파싱 비용 있어 expander로
+                with st.expander("🎯 Target 분포 (pending 기준)", expanded=False):
+                    pending_df = df_all[df_all["state"] == "pending"]
+                    if pending_df.empty:
+                        st.caption("pending 파일이 없습니다.")
+                    else:
+                        @st.cache_data(show_spinner=False)
+                        def _parse_target(
+                            path_str: str, mtime: float
+                        ) -> tuple[str, str] | None:
+                            try:
+                                with open(path_str) as fh:
+                                    cfg = yaml.safe_load(fh)
+                                for _, v in (cfg.get("trials", {}) or {}).items():
+                                    t1 = (v or {}).get("tasks", {}).get("task_1", {}) or {}
+                                    tm = t1.get("target_module_name", "")
+                                    pn = t1.get("port_name", "")
+                                    if tm and pn:
+                                        return tm, pn
+                                return None
+                            except Exception:
+                                return None
+    
+                        tgt_rows: list[dict[str, Any]] = []
+                        for _, r in pending_df.iterrows():
+                            tgt = _parse_target(r["_path"], r["_mtime"])
+                            if tgt is None:
+                                continue
+                            tm, pn = tgt
+                            tgt_rows.append({
+                                "task": r["task"],
+                                "target": f"{tm} / {pn}",
+                            })
+    
+                        if not tgt_rows:
+                            st.caption("target 정보를 읽을 수 있는 config가 없습니다.")
+                        else:
+                            tgt_df = pd.DataFrame(tgt_rows)
+                            for tt in TASK_TYPES:
+                                sub = tgt_df[tgt_df["task"] == tt]
+                                if sub.empty:
+                                    continue
+                                counts_sr = (
+                                    sub["target"].value_counts().sort_index()
+                                )
+                                st.markdown(f"**{tt.upper()}** · 총 {len(sub)}개")
+                                st.bar_chart(counts_sr, horizontal=True)
+    
+    # --- 작업 실행 탭 (Phase 2b — Consumer) ---
+    with tab_execute:
+        from aic_collector.job_queue import (
+            QueueState as _QS,
+            TASK_TYPES as _TT,
+            all_counts as _all_counts,
+            recover_running_to_pending as _recover,
+        )
+    
+        def _worker_status() -> dict | None:
+            """워커 상태: 실행 중이면 dict, 아니면 None."""
+            if not WORKER_PID_FILE.exists():
+                return None
+            try:
+                pid = int(WORKER_PID_FILE.read_text().strip())
+            except Exception:
+                return None
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return None
+            state = {}
+            if WORKER_STATE_FILE.exists():
+                try:
+                    state = json.loads(WORKER_STATE_FILE.read_text())
+                except Exception:
+                    state = {}
+            state["pid"] = pid
+            state["running"] = True
+            return state
+    
+        def _worker_start(
+            root: str,
+            task: str,
+            limit: int | None,
+            policy: str,
+            act_model_path: str | None,
+            ground_truth: bool,
+            use_compressed: bool,
+            collect_episode: bool,
+            output_root: str,
+            timeout: int | None,
+            recover_first: bool,
+            policy_sfp: str | None = None,
+            policy_sc: str | None = None,
+        ) -> None:
+            """aic-collector-worker를 백그라운드 subprocess로 기동."""
+            if _worker_status():
+                raise RuntimeError("이미 워커가 실행 중입니다. 중지 후 다시 시작하세요.")
+    
+            WORKER_LOG_FILE.write_text("")
+            cmd = [
+                "uv", "run", "aic-collector-worker",
+                "--root", root,
+                "--task", task,
+                "--policy", policy,
+                "--ground-truth", str(ground_truth).lower(),
+                "--use-compressed", str(use_compressed).lower(),
+                "--collect-episode", str(collect_episode).lower(),
+                "--output-root", output_root,
+                "--log", str(WORKER_LOG_FILE),
+            ]
+            if limit is not None and limit > 0:
+                cmd += ["--limit", str(limit)]
+            if timeout is not None and timeout > 0:
+                cmd += ["--timeout", str(timeout)]
+            if act_model_path:
+                cmd += ["--act-model-path", act_model_path]
+            if policy_sfp:
+                cmd += ["--policy-sfp", policy_sfp]
+            if policy_sc:
+                cmd += ["--policy-sc", policy_sc]
+            if recover_first:
+                cmd += ["--recover"]
+    
+            # 워커가 webapp이 띄운 영구 Prefect 서버에 연결되도록 env 주입.
+            # 이게 없으면 매 flow run마다 ephemeral 임시 서버가 띄워져 UI에 안 보임.
+            worker_env = os.environ.copy()
+            worker_env["PREFECT_API_URL"] = f"{PREFECT_SERVER_URL}/api"
+    
+            proc = subprocess.Popen(
+                cmd,
+                stdout=open(WORKER_LOG_FILE, "a"),
+                stderr=subprocess.STDOUT,
+                cwd=str(PROJECT_DIR),
+                start_new_session=True,
+                env=worker_env,
             )
-        with col_del:
-            with st.popover("🗑️ 결과 정리"):
-                st.warning("선택한 run을 삭제합니다. 이 작업은 되돌릴 수 없습니다.")
-                run_dirs = sorted(set(df["run"].tolist()))
-                del_target = st.selectbox("삭제할 run", ["(선택)"] + run_dirs, key="del_run")
-                if st.button("삭제 실행", key="btn_del_run") and del_target != "(선택)":
-                    import shutil
-                    target_path = result_output_root / del_target
-                    if target_path.exists():
-                        shutil.rmtree(target_path)
-                        st.success(f"{del_target} 삭제됨")
-                        st.rerun()
-    else:
-        st.info("수집된 결과가 없습니다. 수집을 실행하세요.")
-
-    # 실행 이력
-    with st.expander("📜 실행 이력", expanded=False):
-        history = _load_run_history()
-        if history:
-            for h in reversed(history):
-                per_trial_str = f" | per-trial: {h['per_trial']}" if h.get("per_trial") else ""
-                gt_str = "" if h.get("ground_truth", True) else " | GT:off"
-                st.caption(
-                    f"**{h['time']}** — {h.get('policy','?')} | "
-                    f"{h.get('runs','?')} runs | trials {h.get('trials','?')} | "
-                    f"{h.get('sampling','?')} | seed {h.get('seed','?')}"
-                    f"{per_trial_str}{gt_str}"
-                )
+            WORKER_PID_FILE.write_text(str(proc.pid))
+    
+        def _worker_stop() -> bool:
+            ws = _worker_status()
+            if not ws:
+                return False
+            pid = ws["pid"]
+            try:
+                import signal as _signal
+                os.killpg(os.getpgid(pid), _signal.SIGTERM)
+                time.sleep(1)
+                try:
+                    os.killpg(os.getpgid(pid), _signal.SIGKILL)
+                except OSError:
+                    pass
+                return True
+            except OSError:
+                return False
+    
+        st.subheader("🏃 작업 실행")
+        st.caption(
+            "pending/ 큐를 소비하는 Consumer 워커를 제어합니다. "
+            "정상 종료는 done/으로, 실패는 failed/로 이동합니다. "
+            "실시간 모니터링은 **Prefect 대시보드**를 참고하세요."
+        )
+    
+        # 큐 루트 — 작업 관리 탭과 shared_queue_root로 양방향 싱크
+        if "shared_queue_root" not in st.session_state:
+            st.session_state["shared_queue_root"] = str(PROJECT_DIR / "configs/train")
+        if st.session_state.get("exec_queue_root") != st.session_state["shared_queue_root"]:
+            st.session_state["exec_queue_root"] = st.session_state["shared_queue_root"]
+    
+        def _exec_queue_root_changed() -> None:
+            st.session_state["shared_queue_root"] = st.session_state["exec_queue_root"]
+    
+        exec_queue_root_str = st.text_input(
+            "큐 루트",
+            key="exec_queue_root",
+            help="작업 관리 탭과 값이 공유됩니다.",
+            on_change=_exec_queue_root_changed,
+        )
+        exec_queue_root = Path(exec_queue_root_str)
+    
+        # 큐 현황 (작업 관리 탭과 동일한 가로 스택바)
+        st.markdown("### 📊 큐 현황")
+        if exec_queue_root.exists():
+            ecounts = _all_counts(exec_queue_root)
+            render_queue_status_block(ecounts, _TT)
         else:
-            st.caption("실행 이력이 없습니다.")
-
+            st.caption("큐 루트가 존재하지 않습니다.")
+    
+        st.divider()
+    
+        def _render_running_body() -> None:
+            """실행 중 상태 렌더 — fragment에서 3초마다 재호출."""
+            from datetime import datetime as _dt
+            current_w = _worker_status()
+            if current_w is None:
+                # 워커가 방금 종료 → 전체 페이지 리런으로 idle 뷰 전환
+                st.rerun(scope="app")
+                return
+    
+            st.success(f"● 실행 중 (PID: {current_w['pid']})")
+            processed = int(current_w.get("processed", 0))
+            done_c = int(current_w.get("done", 0))
+            fail_c = int(current_w.get("failed", 0))
+            total_at_start = int(current_w.get("total_at_start", 0) or 0)
+    
+            if total_at_start > 0:
+                ratio = min(1.0, processed / total_at_start)
+                st.progress(
+                    ratio,
+                    text=f"처리 {processed} / {total_at_start} "
+                         f"(done {done_c}, failed {fail_c})",
+                )
+                try:
+                    started_iso = current_w.get("started_at")
+                    if started_iso and processed > 0:
+                        elapsed = (
+                            _dt.now() - _dt.fromisoformat(started_iso)
+                        ).total_seconds()
+                        per_item = elapsed / processed
+                        remaining = max(0, total_at_start - processed)
+                        eta_sec = int(per_item * remaining)
+                        eta_h, _r = divmod(eta_sec, 3600)
+                        eta_m, eta_s = divmod(_r, 60)
+                        eta_str = (
+                            f"{eta_h}h {eta_m}m" if eta_h else
+                            f"{eta_m}m {eta_s}s" if eta_m else f"{eta_s}s"
+                        )
+                        st.caption(
+                            f"⏱ 평균 {per_item:.1f}s/config · 남은 "
+                            f"{remaining}개 · ETA ~{eta_str}"
+                        )
+                except Exception:
+                    pass
+            else:
+                st.write(
+                    f"처리 {processed}개 (done {done_c}, failed {fail_c})"
+                )
+    
+            cur = current_w.get("current")
+            if cur:
+                cur_started = current_w.get("current_started_at")
+                dur_str = ""
+                if cur_started:
+                    try:
+                        dur_sec = int(
+                            (_dt.now() - _dt.fromisoformat(cur_started)).total_seconds()
+                        )
+                        dur_str = f" · {dur_sec}s 경과"
+                    except Exception:
+                        pass
+                st.write(f"🔹 현재 실행: `{cur}`{dur_str}")
+    
+            recent = current_w.get("recent") or []
+            if recent:
+                with st.expander(f"📋 최근 처리 {len(recent)}개", expanded=True):
+                    for r in recent:
+                        icon = "✅" if r.get("result") == "done" else "❌"
+                        st.write(
+                            f"{icon} `{r.get('name', '?')}` · "
+                            f"{r.get('duration_sec', 0)}s"
+                        )
+    
+            col_stop, col_refresh = st.columns([1, 1])
+            with col_stop:
+                if st.button("⏹ 워커 정지", key="exec_stop"):
+                    if _worker_stop():
+                        WORKER_PID_FILE.unlink(missing_ok=True)
+                        st.success("워커 중지됨")
+                        st.rerun(scope="app")
+                    else:
+                        st.warning("워커 프로세스를 찾지 못했습니다.")
+            with col_refresh:
+                if st.button("🔄 상태 새로고침", key="exec_refresh_running"):
+                    st.rerun(scope="app")
+    
+        # 워커 상태 — 실행 중이면 3초마다 자동 갱신되는 fragment
+        st.markdown("### ⚙️ 워커 상태")
+        w = _worker_status()
+        if w:
+            st.caption("⟳ 실행 중 — 3초마다 자동 갱신")
+    
+            @st.fragment(run_every=3)
+            def _live_running_status() -> None:
+                _render_running_body()
+    
+            _live_running_status()
+        else:
+            # 마지막 종료 상태
+            if WORKER_STATE_FILE.exists():
+                try:
+                    last = json.loads(WORKER_STATE_FILE.read_text())
+                    if last.get("status") in ("completed", "interrupted"):
+                        st.info(
+                            f"마지막 실행: {last.get('status')} · "
+                            f"processed {last.get('processed', 0)} "
+                            f"(done {last.get('done', 0)}, failed {last.get('failed', 0)}, "
+                            f"{last.get('elapsed_sec', 0)}s)"
+                        )
+                except Exception:
+                    pass
+    
+            # 실행 설정
+            st.markdown("### 🚀 실행 설정")
+            col_task, col_limit = st.columns([1, 1])
+            # ── 기본 (자주 조절) ──
+            with col_task:
+                exec_task = st.selectbox(
+                    "task 필터", ["all", "sfp", "sc"], index=0, key="exec_task",
+                    help="all: sfp→sc 순서로 전부 소비. sfp/sc: 해당 task만.",
+                )
+            with col_limit:
+                exec_limit = st.number_input(
+                    "limit (0=무제한)", min_value=0, max_value=100000,
+                    value=5, step=1, key="exec_limit",
+                    help="최대 처리 config 수. 0이면 큐가 빌 때까지.",
+                )
+    
+            _policy_options = policies or ["cheatcode"]
+            _policy_default_idx = (
+                _policy_options.index("cheatcode") if "cheatcode" in _policy_options else 0
+            )
+            _split_active = st.session_state.get("exec_policy_split", False)
+            _policy_dir_lines = [
+                f"- `{PIXI_POLICIES_DIR}` "
+                f"({'✅ 존재' if PIXI_POLICIES_DIR.exists() else '❌ 없음'})",
+                f"- `{POLICIES_DIR}` "
+                f"({'✅ 존재' if POLICIES_DIR.exists() else '❌ 없음'})",
+            ]
+            _policy_dir_help = "Policy 탐색 경로:\n" + "\n".join(_policy_dir_lines)
+            exec_policy = st.selectbox(
+                "Policy (기본)" + (" — 분리 모드 사용 중" if _split_active else ""),
+                _policy_options,
+                index=_policy_default_idx,
+                key="exec_policy",
+                disabled=_split_active,
+                help=(
+                    "양쪽 task에 공통 적용되는 기본 policy. "
+                    "아래 체크박스로 SFP/SC를 분리할 수 있습니다.\n\n"
+                    + _policy_dir_help
+                ),
+            )
+            st.caption("📁 Policy 탐색 경로  \n" + "  \n".join(_policy_dir_lines))
+            exec_policy_split = st.checkbox(
+                "SFP / SC에 다른 policy 사용",
+                value=False,
+                key="exec_policy_split",
+                help=(
+                    "on 시 SFP·SC 각각 policy를 따로 지정. 기본 Policy는 비활성화됩니다. "
+                    "예: 'SFP=act (학습된 모델), SC=cheatcode'."
+                ),
+            )
+            exec_policy_sfp = None
+            exec_policy_sc = None
+            if exec_policy_split:
+                col_ps, col_pc = st.columns(2)
+                with col_ps:
+                    exec_policy_sfp = st.selectbox(
+                        "SFP policy", _policy_options,
+                        index=_policy_options.index(exec_policy)
+                        if exec_policy in _policy_options else _policy_default_idx,
+                        key="exec_policy_sfp",
+                        help="sfp task 전용 policy. 워커 내부에서 task별로 dispatch.",
+                    )
+                with col_pc:
+                    exec_policy_sc = st.selectbox(
+                        "SC policy", _policy_options,
+                        index=_policy_options.index(exec_policy)
+                        if exec_policy in _policy_options else _policy_default_idx,
+                        key="exec_policy_sc",
+                        help="sc task 전용 policy. 워커 내부에서 task별로 dispatch.",
+                    )
+    
+            # ── 고급 (첫 설정 후 보통 고정) ──
+            with st.expander("⚙️ 고급", expanded=False):
+                col_gt, col_comp, col_ep = st.columns(3)
+                with col_gt:
+                    exec_ground_truth = st.checkbox(
+                        "ground_truth", value=True, key="exec_gt",
+                        help="시뮬레이터의 정확한 TF 사용 (수집용). 끄면 평가 모드.",
+                    )
+                with col_comp:
+                    exec_use_compressed = st.checkbox(
+                        "use_compressed", value=True, key="exec_comp",
+                        help="카메라 이미지 JPEG 압축 (~3GB/run). 끄면 raw (~58GB/run).",
+                    )
+                with col_ep:
+                    exec_collect_episode = st.checkbox(
+                        "collect_episode", value=False, key="exec_ep",
+                        help="이미지+npy를 episode 디렉토리에 저장. 끄면 bag+scoring만.",
+                    )
+    
+                col_timeout, col_recover = st.columns([1, 1])
+                with col_timeout:
+                    exec_timeout = st.number_input(
+                        "timeout (초, 0=무제한)", min_value=0, max_value=3600,
+                        value=300, step=30, key="exec_timeout",
+                        help="config 1개당 최대 실행 시간. 넘으면 failed로 이동.",
+                    )
+                with col_recover:
+                    exec_recover = st.checkbox(
+                        "시작 전 running/→pending 복구",
+                        value=True, key="exec_recover",
+                        help="비정상 종료로 남은 파일을 복구합니다.",
+                    )
+    
+                # Output root — 결과 탭과 세션으로 공유
+                if "shared_output_root" not in st.session_state:
+                    st.session_state["shared_output_root"] = str(OUTPUT_ROOT)
+                if st.session_state.get("exec_output_root") != st.session_state["shared_output_root"]:
+                    st.session_state["exec_output_root"] = st.session_state["shared_output_root"]
+    
+                def _exec_output_root_changed() -> None:
+                    st.session_state["shared_output_root"] = st.session_state["exec_output_root"]
+    
+                exec_output_root = st.text_input(
+                    "Output root",
+                    key="exec_output_root",
+                    help="실행 결과(bag, scoring)가 저장되는 루트 경로. 결과 탭과 값이 공유됩니다.",
+                    on_change=_exec_output_root_changed,
+                )
+    
+                act_model_path = None
+                _uses_act = exec_policy in ("act", "hybrid") or (
+                    exec_policy_split and (
+                        (exec_policy_sfp in ("act", "hybrid"))
+                        or (exec_policy_sc in ("act", "hybrid"))
+                    )
+                )
+                if _uses_act:
+                    _default_act = str(
+                        Path.home()
+                        / "ws_aic/src/aic/outputs/train/act_aic_v1_backup/checkpoints/last/pretrained_model"
+                    )
+                    act_model_path = st.text_input(
+                        "ACT 모델 경로", value=_default_act, key="exec_act_model",
+                        help="act/hybrid 선택 시 사용. SFP·SC 공용.",
+                    )
+    
+            if st.button("▶ 워커 시작", type="primary", key="exec_start"):
+                if not exec_queue_root.exists():
+                    st.error(f"큐 루트가 존재하지 않습니다: {exec_queue_root}")
+                else:
+                    try:
+                        _worker_start(
+                            root=str(exec_queue_root),
+                            task=exec_task,
+                            limit=int(exec_limit) if int(exec_limit) > 0 else None,
+                            policy=exec_policy,
+                            policy_sfp=exec_policy_sfp,
+                            policy_sc=exec_policy_sc,
+                            act_model_path=act_model_path,
+                            ground_truth=exec_ground_truth,
+                            use_compressed=exec_use_compressed,
+                            collect_episode=exec_collect_episode,
+                            output_root=str(exec_output_root),
+                            timeout=int(exec_timeout) if int(exec_timeout) > 0 else None,
+                            recover_first=exec_recover,
+                        )
+                        st.success("워커 시작됨. 아래 로그에서 진행 확인.")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"워커 시작 실패: {type(e).__name__}: {e}")
+    
+            # 수동 복구 (워커 안 켜고 pending 복구만)
+            if exec_queue_root.exists():
+                running_total = sum(_all_counts(exec_queue_root)[t].running for t in _TT)
+                if running_total > 0:
+                    if st.button(f"↩ running/ {running_total}개 → pending/ 복구 (워커 시작 없이)",
+                                 key="exec_manual_recover"):
+                        moved_total = 0
+                        for tt in _TT:
+                            moved_total += _recover(exec_queue_root, tt)
+                        st.success(f"{moved_total}개 복구됨")
+                        st.rerun()
+    
+        # 실시간 로그
+        st.divider()
+        st.markdown("### 📜 워커 로그")
+    
+        # 툴바 (검색·다운로드·클리어) — auto-refresh 밖
+        col_search, col_dl, col_clear = st.columns([4, 1, 1])
+        with col_search:
+            exec_log_search = st.text_input(
+                "🔍 검색",
+                key="exec_log_search",
+                placeholder="🔍 substring 검색 (대소문자 무시) — 예: ERROR, fail, config_sfp_0003",
+                label_visibility="collapsed",
+            )
+        with col_dl:
+            try:
+                _full_log = WORKER_LOG_FILE.read_text() if WORKER_LOG_FILE.exists() else ""
+            except Exception:
+                _full_log = ""
+            from datetime import datetime as _dt_dl
+            st.download_button(
+                "⬇ 다운로드",
+                data=_full_log or "(empty)\n",
+                file_name=f"worker_log_{_dt_dl.now().strftime('%Y%m%d_%H%M%S')}.log",
+                mime="text/plain",
+                use_container_width=True,
+                disabled=not _full_log,
+                key="exec_log_dl",
+            )
+        with col_clear:
+            with st.popover("🗑 비우기", use_container_width=True):
+                st.warning("로그 파일 내용을 삭제합니다.")
+                if st.button("실행", key="exec_log_clear_confirm", type="primary"):
+                    if WORKER_LOG_FILE.exists():
+                        WORKER_LOG_FILE.write_text("")
+                    st.rerun(scope="app")
+    
+        def _render_log_body() -> None:
+            import html as _html
+            import re as _re
+            if not WORKER_LOG_FILE.exists():
+                st.caption("(아직 실행 이력 없음)")
+                return
+            try:
+                log_text = WORKER_LOG_FILE.read_text()
+            except Exception:
+                log_text = ""
+            if not log_text.strip():
+                st.caption("(로그 비어있음)")
+                return
+    
+            all_lines = log_text.splitlines()
+            search = (st.session_state.get("exec_log_search") or "").strip()
+            if search:
+                filtered = [ln for ln in all_lines if search.lower() in ln.lower()]
+            else:
+                filtered = all_lines
+            display = filtered[-200:]
+    
+            # 레벨 색상
+            pat_err = _re.compile(r"\b(ERROR|FAIL|FATAL|Traceback|Exception)\b", _re.IGNORECASE)
+            pat_warn = _re.compile(r"\b(WARN|WARNING)\b", _re.IGNORECASE)
+            pat_done = _re.compile(r"\[done ?\]")
+            pat_fail_tag = _re.compile(r"\[fail ?\]")
+    
+            rendered: list[str] = []
+            for ln in display:
+                esc = _html.escape(ln) or "&nbsp;"
+                if pat_err.search(ln):
+                    color = "#dc3545"
+                    bg = "rgba(220,53,69,0.08)"
+                elif pat_warn.search(ln):
+                    color = "#b8860b"
+                    bg = "rgba(184,134,11,0.08)"
+                elif pat_fail_tag.search(ln):
+                    color = "#dc3545"
+                    bg = "transparent"
+                elif pat_done.search(ln):
+                    color = "#198754"
+                    bg = "transparent"
+                else:
+                    color = "inherit"
+                    bg = "transparent"
+                rendered.append(
+                    f'<div style="color:{color};background:{bg};'
+                    f'white-space:pre-wrap;word-break:break-all;'
+                    f'padding:0 4px;">{esc}</div>'
+                )
+            body_html = "".join(rendered)
+            st.markdown(
+                f'<div style="background:#0b1021;color:#e7eaf6;padding:10px;'
+                f'border-radius:6px;max-height:400px;overflow:auto;'
+                f'font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;'
+                f'line-height:1.45;">{body_html}</div>',
+                unsafe_allow_html=True,
+            )
+    
+            filter_note = f" · 필터 '{search}'" if search else ""
+            st.caption(f"표시: {len(display)}/{len(filtered)}줄{filter_note}")
+    
+        # 로그 본문 — 워커 실행 중에만 3초마다 자동 갱신
+        _log_refresh = 3 if _worker_status() else None
+    
+        @st.fragment(run_every=_log_refresh)
+        def _live_log() -> None:
+            _render_log_body()
+    
+        _live_log()
+    
+        st.caption(
+            "실시간 상세 로그는 Prefect 대시보드에서 확인할 수 있습니다: "
+            f"[Open Prefect]({get_prefect_ui_url()})"
+        )
+    
+    # --- 결과 탭 ---
+    with tab_results:
+        st.subheader("수집 결과")
+    
+        # 저장 경로 — 작업 실행 탭과 세션으로 공유
+        if "shared_output_root" not in st.session_state:
+            st.session_state["shared_output_root"] = str(OUTPUT_ROOT)
+        if st.session_state.get("result_output_root") != st.session_state["shared_output_root"]:
+            st.session_state["result_output_root"] = st.session_state["shared_output_root"]
+    
+        def _result_output_root_changed() -> None:
+            st.session_state["shared_output_root"] = st.session_state["result_output_root"]
+    
+        result_output_root_str = st.text_input(
+            "📁 저장 경로",
+            key="result_output_root",
+            help="run_*/trial_* 결과를 스캔할 루트. 작업 실행 탭과 값이 공유됩니다.",
+            on_change=_result_output_root_changed,
+        )
+        result_output_root = Path(result_output_root_str).expanduser()
+        if not result_output_root.exists():
+            st.caption(f"⚠ 경로가 존재하지 않습니다: `{result_output_root}`")
+    
+        col_refresh, col_prefect = st.columns([1, 2])
+        with col_refresh:
+            if st.button("새로고침", key="refresh_results"):
+                pass  # rerun 트리거
+        with col_prefect:
+            st.link_button(
+                "🔍 Prefect 대시보드",
+                get_prefect_ui_url(),
+                help="과거 수집 실행 이력과 task별 상세 로그 확인",
+            )
+    
+        rows = load_results(result_output_root)
+        if rows:
+            import pandas as pd
+            df = pd.DataFrame(rows)
+    
+            # 요약
+            success_count = (df["success"] == "✅").sum()
+            total = len(df)
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("총 Trials", total)
+            col_b.metric("성공", f"{success_count} ({100*success_count/total:.0f}%)")
+            col_c.metric("평균 점수", f"{df['score'].mean():.1f}")
+    
+            # 테이블
+            st.dataframe(df, width="stretch", hide_index=True)
+    
+            # 검증 경고
+            validations = load_run_validations(result_output_root)
+            if validations:
+                with st.expander(f"⚠️  검증 경고 ({len(validations)}개 run)", expanded=False):
+                    for v in validations:
+                        st.markdown(
+                            f"**{v['run']}** — {v['passed']}/{v['total']} 체크 통과"
+                        )
+                        for w in v["warnings"]:
+                            st.markdown(f"  - ⚠️ {w}")
+    
+            # CSV 다운로드 + 삭제
+            col_dl, col_del = st.columns(2)
+            with col_dl:
+                csv_data = df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "📥 결과 CSV 다운로드",
+                    data=csv_data,
+                    file_name="aic_collection_results.csv",
+                    mime="text/csv",
+                )
+            with col_del:
+                with st.popover("🗑️ 결과 정리"):
+                    st.warning("선택한 run을 삭제합니다. 이 작업은 되돌릴 수 없습니다.")
+                    run_dirs = sorted(set(df["run"].tolist()))
+                    del_target = st.selectbox("삭제할 run", ["(선택)"] + run_dirs, key="del_run")
+                    if st.button("삭제 실행", key="btn_del_run") and del_target != "(선택)":
+                        import shutil
+                        target_path = result_output_root / del_target
+                        if target_path.exists():
+                            shutil.rmtree(target_path)
+                            st.success(f"{del_target} 삭제됨")
+                            st.rerun()
+        else:
+            st.info("수집된 결과가 없습니다. 수집을 실행하세요.")
+    
+        # 실행 이력
+        with st.expander("📜 실행 이력", expanded=False):
+            history = _load_run_history()
+            if history:
+                for h in reversed(history):
+                    per_trial_str = f" | per-trial: {h['per_trial']}" if h.get("per_trial") else ""
+                    gt_str = "" if h.get("ground_truth", True) else " | GT:off"
+                    st.caption(
+                        f"**{h['time']}** — {h.get('policy','?')} | "
+                        f"{h.get('runs','?')} runs | trials {h.get('trials','?')} | "
+                        f"{h.get('sampling','?')} | seed {h.get('seed','?')}"
+                        f"{per_trial_str}{gt_str}"
+                    )
+            else:
+                st.caption("실행 이력이 없습니다.")
