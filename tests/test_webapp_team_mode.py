@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import ANY
 
@@ -255,3 +256,69 @@ def test_submit_team_claim_fixed_target_is_reflected_in_produced_configs(tmp_pat
         )
         for cfg in produced
     } == {("nic_card_mount_0", "sfp_port_0")}
+
+
+def test_submit_team_claim_concurrent_submissions_for_same_member_use_disjoint_ranges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_root = tmp_path / "queue"
+    ledger_path = tmp_path / "ledger.yaml"
+    preset = _preset(tasks={"sfp": 2})
+    first_in_sampler = threading.Event()
+    release_first = threading.Event()
+    call_count = 0
+    call_count_lock = threading.Lock()
+
+    original_sample_scenes = __import__(
+        "aic_collector.team_preset", fromlist=["sample_scenes"]
+    ).sample_scenes
+
+    def blocking_sample_scenes(*args: object, **kwargs: object) -> object:
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+            current_call = call_count
+        if current_call == 1:
+            first_in_sampler.set()
+            assert release_first.wait(timeout=2)
+        return original_sample_scenes(*args, **kwargs)
+
+    monkeypatch.setattr("aic_collector.team_preset.sample_scenes", blocking_sample_scenes)
+
+    results: list[SubmitResult] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def submit() -> None:
+        try:
+            result = submit_team_claim(
+                preset,
+                member_id="m0",
+                task_type="sfp",
+                queue_root=queue_root,
+                ledger_path=ledger_path,
+                template_path=TEMPLATE_PATH,
+            )
+            with lock:
+                results.append(result)
+        except BaseException as exc:
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=submit) for _ in range(2)]
+    threads[0].start()
+    assert first_in_sampler.wait(timeout=2)
+    threads[1].start()
+    release_first.set()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert sorted(result.start_index for result in results) == [0, 2]
+    assert [path.name for path in _pending_configs(queue_root, "sfp")] == [
+        "config_sfp_000000.yaml",
+        "config_sfp_000001.yaml",
+        "config_sfp_000002.yaml",
+        "config_sfp_000003.yaml",
+    ]
+    assert [entry["start_index"] for entry in _ledger_entries(ledger_path)] == [0, 2]

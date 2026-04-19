@@ -8,6 +8,7 @@ import re
 import subprocess
 import tempfile
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -128,18 +129,20 @@ def _require_valid_entry_id(entries: list[dict[str, Any]], entry_id: int) -> Non
         raise PresetError(f"Invalid ledger entry id: {entry_id}")
 
 
-def _locked_update_ledger(
-    ledger_path: Path, updater: Any
-) -> Any:
+@contextmanager
+def _ledger_lock(ledger_path: Path) -> Any:
     lock_path = _lock_path(ledger_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-        entries = _ledger_entries(ledger_path)
-        result = updater(entries)
-        _atomic_rewrite(ledger_path, {"entries": entries})
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-        return result
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def _write_ledger_entries(ledger_path: Path, entries: list[dict[str, Any]]) -> None:
+    _atomic_rewrite(ledger_path, {"entries": entries})
 
 
 def _require_path(data: dict[str, Any], path: str) -> Any:
@@ -248,6 +251,49 @@ def _member_index(preset: TeamPreset, member_id: str) -> int:
     raise KeyError(member_id)
 
 
+def _append_claim_locked(
+    entries: list[dict[str, Any]],
+    *,
+    member_id: str,
+    task_type: str,
+    base_seed: int,
+    start_index: int,
+    count: int,
+    strategy: str,
+    queue_root: Path,
+    preset_hash: str,
+) -> int:
+    entry_id = len(entries)
+    entries.append(
+        {
+            "member_id": member_id,
+            "task_type": task_type,
+            "base_seed": base_seed,
+            "start_index": start_index,
+            "count": count,
+            "strategy": strategy,
+            "queue_root": str(queue_root),
+            "preset_hash": preset_hash,
+            "git_sha": _git_sha(),
+            "created_at": _iso_utc_now(),
+        }
+    )
+    return entry_id
+
+
+def _rollback_claim_locked(entries: list[dict[str, Any]], entry_id: int) -> None:
+    _require_valid_entry_id(entries, entry_id)
+    if entry_id == len(entries) - 1:
+        entries.pop()
+
+
+def _adjust_claim_count_locked(
+    entries: list[dict[str, Any]], entry_id: int, actual_count: int
+) -> None:
+    _require_valid_entry_id(entries, entry_id)
+    entries[entry_id]["count"] = actual_count
+
+
 def append_claim(
     ledger_path: Path,
     *,
@@ -260,44 +306,35 @@ def append_claim(
     queue_root: Path,
     preset_hash: str,
 ) -> int:
-    def updater(entries: list[dict[str, Any]]) -> int:
-        entry_id = len(entries)
-        entries.append(
-            {
-                "member_id": member_id,
-                "task_type": task_type,
-                "base_seed": base_seed,
-                "start_index": start_index,
-                "count": count,
-                "strategy": strategy,
-                "queue_root": str(queue_root),
-                "preset_hash": preset_hash,
-                "git_sha": _git_sha(),
-                "created_at": _iso_utc_now(),
-            }
+    with _ledger_lock(ledger_path):
+        entries = _ledger_entries(ledger_path)
+        entry_id = _append_claim_locked(
+            entries,
+            member_id=member_id,
+            task_type=task_type,
+            base_seed=base_seed,
+            start_index=start_index,
+            count=count,
+            strategy=strategy,
+            queue_root=queue_root,
+            preset_hash=preset_hash,
         )
+        _write_ledger_entries(ledger_path, entries)
         return entry_id
-
-    return _locked_update_ledger(ledger_path, updater)
 
 
 def rollback_claim(ledger_path: Path, entry_id: int) -> None:
-    def updater(entries: list[dict[str, Any]]) -> None:
-        _require_valid_entry_id(entries, entry_id)
-        if entry_id == len(entries) - 1:
-            entries.pop()
-        return None
-
-    _locked_update_ledger(ledger_path, updater)
+    with _ledger_lock(ledger_path):
+        entries = _ledger_entries(ledger_path)
+        _rollback_claim_locked(entries, entry_id)
+        _write_ledger_entries(ledger_path, entries)
 
 
 def adjust_claim_count(ledger_path: Path, entry_id: int, actual_count: int) -> None:
-    def updater(entries: list[dict[str, Any]]) -> None:
-        _require_valid_entry_id(entries, entry_id)
-        entries[entry_id]["count"] = actual_count
-        return None
-
-    _locked_update_ledger(ledger_path, updater)
+    with _ledger_lock(ledger_path):
+        entries = _ledger_entries(ledger_path)
+        _adjust_claim_count_locked(entries, entry_id, actual_count)
+        _write_ledger_entries(ledger_path, entries)
 
 
 def slot_range(preset: TeamPreset, member_id: str) -> tuple[int, int]:
@@ -375,57 +412,62 @@ def submit_team_claim(
     template_path: Path,
 ) -> SubmitResult:
     requested_count = preset.tasks[task_type]
-    start_index = next_start_index_in_slot(preset, member_id, queue_root, task_type)
-    _, slot_end_exclusive = slot_range(preset, member_id)
-    if start_index + requested_count > slot_end_exclusive:
-        raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
+    with _ledger_lock(ledger_path):
+        entries = _ledger_entries(ledger_path)
+        start_index = next_start_index_in_slot(preset, member_id, queue_root, task_type)
+        _, slot_end_exclusive = slot_range(preset, member_id)
+        if start_index + requested_count > slot_end_exclusive:
+            raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
 
-    entry_id = append_claim(
-        ledger_path,
-        member_id=member_id,
-        task_type=task_type,
-        base_seed=preset.base_seed,
-        start_index=start_index,
-        count=requested_count,
-        strategy=preset.strategy,
-        queue_root=queue_root,
-        preset_hash=preset.preset_hash,
-    )
-
-    try:
-        plans = sample_scenes(
-            _training_cfg_from_preset(preset),
-            task_type,
-            requested_count,
-            preset.base_seed,
-            start_index=start_index,
-        )
-    except Exception:
-        rollback_claim(ledger_path, entry_id)
-        raise
-
-    try:
-        written_paths = write_plans(
-            plans,
-            queue_root,
-            template_path,
-            index_width=preset.index_width,
-        )
-    except Exception:
-        actual_count = _count_files_in_range(
-            queue_root,
-            task_type,
+        entry_id = _append_claim_locked(
+            entries,
+            member_id=member_id,
+            task_type=task_type,
+            base_seed=preset.base_seed,
             start_index=start_index,
             count=requested_count,
+            strategy=preset.strategy,
+            queue_root=queue_root,
+            preset_hash=preset.preset_hash,
         )
-        adjust_claim_count(ledger_path, entry_id, actual_count)
-        raise
+        _write_ledger_entries(ledger_path, entries)
 
-    return SubmitResult(
-        start_index=start_index,
-        written_count=len(written_paths),
-        entry_id=entry_id,
-    )
+        try:
+            plans = sample_scenes(
+                _training_cfg_from_preset(preset),
+                task_type,
+                requested_count,
+                preset.base_seed,
+                start_index=start_index,
+            )
+        except Exception:
+            _rollback_claim_locked(entries, entry_id)
+            _write_ledger_entries(ledger_path, entries)
+            raise
+
+        try:
+            written_paths = write_plans(
+                plans,
+                queue_root,
+                template_path,
+                index_width=preset.index_width,
+            )
+        except Exception:
+            actual_count = _count_files_in_range(
+                queue_root,
+                task_type,
+                start_index=start_index,
+                count=requested_count,
+            )
+            _adjust_claim_count_locked(entries, entry_id, actual_count)
+            _write_ledger_entries(ledger_path, entries)
+            raise
+
+        return SubmitResult(
+            start_index=start_index,
+            written_count=len(written_paths),
+            entry_id=entry_id,
+        )
 
 
 def load_preset(path: Path) -> TeamPreset | None:
