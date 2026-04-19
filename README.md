@@ -82,6 +82,20 @@ UI나 CLI를 외우기 귀찮다면, **Claude Code**(또는 Codex) 에서 자연
 
 자세한 스킬 동작 규약은 [`.claude/skills/aic-collect/SKILL.md`](.claude/skills/aic-collect/SKILL.md) 참고.
 
+### Gemini / Codex 등 다른 에이전트를 쓸 때
+
+Claude Code는 `.claude/` 디렉토리를 자동으로 읽지만, **Gemini CLI·Codex 등은 `.agents/` 규약**을 따릅니다. 다음 중 하나로 맞춰주세요:
+
+```bash
+# 심볼릭 링크 (권장 — 한 쪽만 관리)
+ln -s .claude .agents
+
+# 또는 복사 (별도 관리가 필요하면)
+cp -r .claude .agents
+```
+
+스킬 본문(`SKILL.md`)과 커맨드(`commands/`) 파일 포맷은 에이전트 간 공통이라 그대로 동작합니다.
+
 ---
 
 ## 🔍 1. 환경 점검 탭
