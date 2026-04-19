@@ -10,7 +10,7 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from aic_collector.job_queue import QueueState, queue_dir
-from aic_collector.team_preset import PresetError, TeamPreset
+from aic_collector.team_preset import PresetError, TeamPreset, append_claim, submit_team_claim
 from aic_collector.webapp import (
     build_team_mode_state,
     build_team_preview_scene_config,
@@ -82,6 +82,48 @@ def test_build_team_mode_state_reports_slot_usage_and_clamps_sfp_count(tmp_path:
     assert state["default_sfp_count"] == 7
     assert state["selected_sfp_count"] == 7
     assert state["slot_exhausted"] is False
+
+
+def test_build_team_mode_state_stays_aligned_with_submit_when_stale_ledger_claim_exists(
+    tmp_path: Path,
+) -> None:
+    queue_root = tmp_path / "queue"
+    ledger_path = tmp_path / "ledger.yaml"
+    preset = _preset(index_width=6, tasks={"sfp_default_count": 4, "sc_default_count": 0})
+
+    append_claim(
+        ledger_path,
+        member_id="m0",
+        task_type="sfp",
+        base_seed=preset.base_seed,
+        start_index=0,
+        count=4,
+        strategy=preset.strategy,
+        queue_root=queue_root,
+        preset_hash=preset.preset_hash,
+    )
+
+    state = build_team_mode_state(
+        preset,
+        queue_root=queue_root,
+        ledger_path=ledger_path,
+        member_id="m0",
+    )
+    submit_preset = build_team_submit_preset(preset, sfp_count=state["selected_sfp_count"])
+    result = submit_team_claim(
+        submit_preset,
+        member_id="m0",
+        task_type="sfp",
+        queue_root=queue_root,
+        ledger_path=ledger_path,
+        template_path=PROJECT_DIR / "configs/community_random_config.yaml",
+    )
+
+    assert state["used_slots"] == 4
+    assert state["remaining_slots"] == 6
+    assert state["next_start_index"] == 4
+    assert state["preview_filename"] == "config_sfp_000004.yaml"
+    assert result.start_index == state["next_start_index"]
 
 
 def test_build_team_mode_state_marks_slot_exhaustion_and_zeroes_counts(tmp_path: Path) -> None:

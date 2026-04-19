@@ -1226,6 +1226,7 @@ def build_team_mode_state(
     preset: TeamPreset,
     *,
     queue_root: Path,
+    ledger_path: Path | None = None,
     member_id: str,
     requested_sfp_count: int | None = None,
 ) -> dict[str, Any]:
@@ -1233,7 +1234,13 @@ def build_team_mode_state(
     slot_capacity = slot_end_exclusive - slot_start
 
     try:
-        next_start_index = next_start_index_in_slot(preset, member_id, queue_root, "sfp")
+        next_start_index = next_start_index_in_slot(
+            preset,
+            member_id,
+            queue_root,
+            "sfp",
+            ledger_path=ledger_path,
+        )
         used_slots = next_start_index - slot_start
         remaining_slots = slot_end_exclusive - next_start_index
         preview_filename = f"config_sfp_{next_start_index:0{preset.index_width}d}.yaml"
@@ -1480,6 +1487,7 @@ if st is not None:
                     team_state = build_team_mode_state(
                         team_preset,
                         queue_root=mgr_queue_root,
+                        ledger_path=LEDGER_PATH,
                         member_id=mgr_team_member_id,
                         requested_sfp_count=st.session_state.get("mgr_sfp_count"),
                     )

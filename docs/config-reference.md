@@ -19,8 +19,8 @@ configs/train/
   └ sc/ (동일 구조)
 ```
 
-- 파일명: `config_{task_type}_{NNNN}.yaml` (NNNN은 4자리 sample_index).
-- append 모드: 모든 상태 디렉토리 + legacy(플랫 *.yaml)를 스캔해 `max(NNNN) + 1`부터 부여. 중복 없음.
+- 파일명: `config_{task_type}_{NNNNNN}.yaml` (NNNNNN은 6자리 sample_index).
+- append 모드: 모든 상태 디렉토리 + legacy(플랫 *.yaml)를 스캔해 `max(NNNNNN) + 1`부터 부여. 중복 없음.
 - Legacy 파일(플랫 구조): 관리 탭의 "Legacy → pending/ 이동" 버튼으로 일괄 마이그레이션 가능. pending에 동일 이름이 있으면 건너뜀(데이터 손실 방지).
 
 ## Sweep config 전체 구조

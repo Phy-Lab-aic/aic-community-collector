@@ -354,6 +354,47 @@ members:
         load_preset(path)
 
 
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("team.shard_stride", 0),
+        ("team.shard_stride", -1),
+        ("team.index_width", 0),
+        ("team.index_width", -1),
+        ("team.base_seed", -1),
+    ],
+)
+def test_load_preset_rejects_non_positive_team_numeric_settings(
+    tmp_path: Path,
+    field_name: str,
+    field_value: int,
+) -> None:
+    base_seed = field_value if field_name == "team.base_seed" else 100
+    shard_stride = field_value if field_name == "team.shard_stride" else 17
+    index_width = field_value if field_name == "team.index_width" else 4
+    path = _write_preset(
+        tmp_path / f"{field_name.replace('.', '_')}.yaml",
+        f"""
+team:
+  base_seed: {base_seed}
+  shard_stride: {shard_stride}
+  index_width: {index_width}
+sampling:
+  strategy: uniform
+  ranges: {{}}
+scene: {{}}
+tasks:
+  sfp: 12
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+    )
+
+    with pytest.raises(PresetError, match=re.escape(field_name)):
+        load_preset(path)
+
+
 def test_slot_range_uses_member_position_and_stride() -> None:
     preset = TeamPreset(
         base_seed=100,

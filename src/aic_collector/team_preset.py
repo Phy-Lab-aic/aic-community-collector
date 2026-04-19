@@ -168,6 +168,20 @@ def _validate_int(value: Any, path: str) -> int:
     return value
 
 
+def _validate_non_negative_int(value: Any, path: str) -> int:
+    validated = _validate_int(value, path)
+    if validated < 0:
+        raise PresetError(f"Invalid integer field: {path}")
+    return validated
+
+
+def _validate_positive_int(value: Any, path: str) -> int:
+    validated = _validate_int(value, path)
+    if validated <= 0:
+        raise PresetError(f"Invalid integer field: {path}")
+    return validated
+
+
 def _validate_mapping(value: Any, path: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise PresetError(f"Invalid mapping field: {path}")
@@ -396,9 +410,12 @@ def _highest_claimed_index_in_slot(
     return highest_index
 
 
-def next_start_index_in_slot(
-    preset: TeamPreset, member_id: str, queue_root: Path, task_type: str
-) -> int:
+def _highest_queued_index_in_slot(
+    preset: TeamPreset,
+    member_id: str,
+    queue_root: Path,
+    task_type: str,
+) -> int | None:
     slot_start, slot_end_exclusive = slot_range(preset, member_id)
     pattern = re.compile(_CONFIG_INDEX_RE_TEMPLATE.format(task_type=re.escape(task_type)))
     highest_index: int | None = None
@@ -420,6 +437,38 @@ def next_start_index_in_slot(
                     if highest_index is None
                     else max(highest_index, config_index)
                 )
+
+    return highest_index
+
+
+def next_start_index_in_slot(
+    preset: TeamPreset,
+    member_id: str,
+    queue_root: Path,
+    task_type: str,
+    *,
+    ledger_path: Path | None = None,
+    entries: list[dict[str, Any]] | None = None,
+) -> int:
+    slot_start, slot_end_exclusive = slot_range(preset, member_id)
+    highest_index = _highest_queued_index_in_slot(preset, member_id, queue_root, task_type)
+
+    if entries is None and ledger_path is not None:
+        entries = _ledger_entries(ledger_path)
+    if entries is not None:
+        highest_claimed_index = _highest_claimed_index_in_slot(
+            entries,
+            member_id=member_id,
+            task_type=task_type,
+            slot_start=slot_start,
+            slot_end_exclusive=slot_end_exclusive,
+        )
+        if highest_claimed_index is not None:
+            highest_index = (
+                highest_claimed_index
+                if highest_index is None
+                else max(highest_index, highest_claimed_index)
+            )
 
     return _next_start_index_from_highest_claimed(
         highest_index,
@@ -467,22 +516,14 @@ def submit_team_claim(
     requested_count = preset.tasks[task_type]
     with _ledger_lock(ledger_path):
         entries = _ledger_entries(ledger_path)
-        slot_start, slot_end_exclusive = slot_range(preset, member_id)
-        start_index = next_start_index_in_slot(preset, member_id, queue_root, task_type)
-        highest_claimed_index = _highest_claimed_index_in_slot(
-            entries,
-            member_id=member_id,
-            task_type=task_type,
-            slot_start=slot_start,
-            slot_end_exclusive=slot_end_exclusive,
+        start_index = next_start_index_in_slot(
+            preset,
+            member_id,
+            queue_root,
+            task_type,
+            entries=entries,
         )
-        if highest_claimed_index is not None and highest_claimed_index >= start_index:
-            start_index = _next_start_index_from_highest_claimed(
-                highest_claimed_index,
-                member_id=member_id,
-                slot_start=slot_start,
-                slot_end_exclusive=slot_end_exclusive,
-            )
+        _, slot_end_exclusive = slot_range(preset, member_id)
         if start_index + requested_count > slot_end_exclusive:
             raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
 
@@ -549,9 +590,9 @@ def load_preset(path: Path) -> TeamPreset | None:
     if not isinstance(raw, dict):
         raise PresetError("Preset root must be a mapping")
 
-    base_seed = _validate_int(_require_path(raw, "team.base_seed"), "team.base_seed")
-    shard_stride = _validate_int(_require_path(raw, "team.shard_stride"), "team.shard_stride")
-    index_width = _validate_int(_require_path(raw, "team.index_width"), "team.index_width")
+    base_seed = _validate_non_negative_int(_require_path(raw, "team.base_seed"), "team.base_seed")
+    shard_stride = _validate_positive_int(_require_path(raw, "team.shard_stride"), "team.shard_stride")
+    index_width = _validate_positive_int(_require_path(raw, "team.index_width"), "team.index_width")
     strategy = _validate_strategy(_require_path(raw, "sampling.strategy"))
     ranges = _freeze(_validate_mapping(_require_path(raw, "sampling.ranges"), "sampling.ranges"))
     scene = _freeze(_validate_mapping(_require_path(raw, "scene"), "scene"))
