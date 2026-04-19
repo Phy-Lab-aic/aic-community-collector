@@ -319,4 +319,8 @@ uv run aic-prefect-run \
 
 ## 📄 License
 
-Apache-2.0
+Apache-2.0 — see [LICENSE](LICENSE).
+
+---
+
+Created by **Changyong Um** ([@e7217](https://github.com/e7217), e7217@naver.com).

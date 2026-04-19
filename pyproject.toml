@@ -2,6 +2,8 @@
 name = "aic-community-collector"
 version = "0.1.0"
 description = "AIC 챌린지 커뮤니티 데이터 수집 도구"
+authors = [{ name = "Changyong Um", email = "e7217@naver.com" }]
+license = { text = "Apache-2.0" }
 requires-python = ">=3.12"
 dependencies = [
     "streamlit>=1.30",
