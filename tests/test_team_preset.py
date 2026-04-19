@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -36,9 +37,11 @@ tasks:
   sfp: 12
   sc: 8
 members:
-  - name: alpha
+  - id: alpha
+    name: Alpha
     role: lead
-  - name: beta
+  - id: beta
+    name: Beta
     role: support
 """.strip(),
     )
@@ -53,9 +56,9 @@ members:
     assert preset.ranges == {"nic_translation": {"min": -0.02, "max": 0.02}}
     assert preset.scene == {"env": "training"}
     assert preset.tasks == {"sfp": 12, "sc": 8}
-    assert preset.members == [
-        {"name": "alpha", "role": "lead"},
-        {"name": "beta", "role": "support"},
+    assert list(preset.members) == [
+        {"id": "alpha", "name": "Alpha", "role": "lead"},
+        {"id": "beta", "name": "Beta", "role": "support"},
     ]
     assert preset.preset_hash.startswith("sha256:")
 
@@ -91,8 +94,8 @@ scene: {}
 tasks:
   sfp: 12
 members:
-  - name: alpha
-    role: lead
+  - id: alpha
+    name: Alpha
 """.strip(),
     )
 
@@ -121,9 +124,11 @@ tasks:
   sfp: 12
   sc: 8
 members:
-  - name: alpha
+  - id: alpha
+    name: Alpha
     role: lead
-  - name: beta
+  - id: beta
+    name: Beta
     role: support
 """.strip(),
     )
@@ -132,9 +137,11 @@ members:
         """
 members:
   - role: lead
-    name: alpha
+    name: Alpha
+    id: alpha
   - role: support
-    name: beta
+    name: Beta
+    id: beta
 tasks:
   sc: 8
   sfp: 12
@@ -160,3 +167,144 @@ team:
     assert preset_a is not None
     assert preset_b is not None
     assert preset_a.preset_hash == preset_b.preset_hash
+
+
+@pytest.mark.parametrize(
+    ("field_name", "content"),
+    [
+        (
+            "team.base_seed",
+            """
+team:
+  base_seed: not-an-int
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {}
+scene: {}
+tasks:
+  sfp: 12
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+        ),
+        (
+            "sampling.strategy",
+            """
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: random
+  ranges: {}
+scene: {}
+tasks:
+  sfp: 12
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+        ),
+        (
+            "sampling.ranges",
+            """
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: []
+scene: {}
+tasks:
+  sfp: 12
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+        ),
+        (
+            "tasks",
+            """
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {}
+scene: {}
+tasks:
+  - sfp
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+        ),
+        (
+            "members[0].id",
+            """
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {}
+scene: {}
+tasks:
+  sfp: 12
+members:
+  - id: null
+    name: Alpha
+""".strip(),
+        ),
+    ],
+)
+def test_load_preset_rejects_malformed_parseable_content(
+    tmp_path: Path, field_name: str, content: str
+) -> None:
+    path = _write_preset(tmp_path / f"{field_name.replace('.', '_')}.yaml", content)
+
+    with pytest.raises(PresetError, match=re.escape(field_name)):
+        load_preset(path)
+
+
+def test_load_preset_returns_immutable_nested_data(tmp_path: Path) -> None:
+    path = _write_preset(
+        tmp_path / "preset.yaml",
+        """
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges:
+    nic_translation:
+      min: -0.02
+      max: 0.02
+scene:
+  env: training
+tasks:
+  sfp: 12
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+    )
+
+    preset = load_preset(path)
+
+    assert preset is not None
+    with pytest.raises(TypeError):
+        preset.scene["env"] = "eval"
+    with pytest.raises(TypeError):
+        preset.ranges["nic_translation"]["min"] = -0.5
+    with pytest.raises(AttributeError):
+        preset.members.append({"id": "beta", "name": "Beta"})
+    with pytest.raises(TypeError):
+        preset.members[0]["name"] = "Changed"

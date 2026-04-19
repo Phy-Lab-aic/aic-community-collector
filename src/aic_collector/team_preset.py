@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
 import yaml
@@ -23,10 +25,10 @@ class TeamPreset:
     shard_stride: int
     index_width: int
     strategy: Literal["uniform", "lhs"]
-    ranges: dict[str, Any]
-    scene: dict[str, Any]
-    tasks: dict[str, int]
-    members: list[dict[str, str]]
+    ranges: Mapping[str, Any]
+    scene: Mapping[str, Any]
+    tasks: Mapping[str, int]
+    members: tuple[Mapping[str, str], ...]
     preset_hash: str
 
 
@@ -45,6 +47,62 @@ def _require_path(data: dict[str, Any], path: str) -> Any:
     return current
 
 
+def _freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({str(k): _freeze(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _validate_int(value: Any, path: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PresetError(f"Invalid integer field: {path}")
+    return value
+
+
+def _validate_mapping(value: Any, path: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise PresetError(f"Invalid mapping field: {path}")
+    return value
+
+
+def _validate_strategy(value: Any) -> Literal["uniform", "lhs"]:
+    if value not in {"uniform", "lhs"}:
+        raise PresetError("Invalid strategy field: sampling.strategy")
+    return value
+
+
+def _validate_tasks(value: Any) -> dict[str, int]:
+    tasks = _validate_mapping(value, "tasks")
+    validated: dict[str, int] = {}
+    for key, task_count in tasks.items():
+        validated[str(key)] = _validate_int(task_count, f"tasks.{key}")
+    return validated
+
+
+def _validate_members(value: Any) -> tuple[Mapping[str, str], ...]:
+    if not isinstance(value, list):
+        raise PresetError("Invalid members field: members")
+
+    members: list[Mapping[str, str]] = []
+    for index, member in enumerate(value):
+        if not isinstance(member, dict):
+            raise PresetError(f"Invalid member field: members[{index}]")
+        if "id" not in member:
+            raise PresetError(f"Missing required field: members[{index}].id")
+        if "name" not in member:
+            raise PresetError(f"Missing required field: members[{index}].name")
+        if member["id"] is None:
+            raise PresetError(f"Invalid member field: members[{index}].id")
+        if member["name"] is None:
+            raise PresetError(f"Invalid member field: members[{index}].name")
+
+        normalized = {str(k): str(v) for k, v in member.items()}
+        members.append(MappingProxyType(normalized))
+    return tuple(members)
+
+
 def load_preset(path: Path) -> TeamPreset | None:
     if not path.exists():
         return None
@@ -57,14 +115,14 @@ def load_preset(path: Path) -> TeamPreset | None:
     if not isinstance(raw, dict):
         raise PresetError("Preset root must be a mapping")
 
-    base_seed = _require_path(raw, "team.base_seed")
-    shard_stride = _require_path(raw, "team.shard_stride")
-    index_width = _require_path(raw, "team.index_width")
-    strategy = _require_path(raw, "sampling.strategy")
-    ranges = _require_path(raw, "sampling.ranges")
-    scene = _require_path(raw, "scene")
-    tasks = _require_path(raw, "tasks")
-    members = _require_path(raw, "members")
+    base_seed = _validate_int(_require_path(raw, "team.base_seed"), "team.base_seed")
+    shard_stride = _validate_int(_require_path(raw, "team.shard_stride"), "team.shard_stride")
+    index_width = _validate_int(_require_path(raw, "team.index_width"), "team.index_width")
+    strategy = _validate_strategy(_require_path(raw, "sampling.strategy"))
+    ranges = _freeze(_validate_mapping(_require_path(raw, "sampling.ranges"), "sampling.ranges"))
+    scene = _freeze(_validate_mapping(_require_path(raw, "scene"), "scene"))
+    tasks = _freeze(_validate_tasks(_require_path(raw, "tasks")))
+    members = _validate_members(_require_path(raw, "members"))
 
     return TeamPreset(
         base_seed=base_seed,
