@@ -216,6 +216,51 @@ def test_next_config_index_and_write() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 샘플링 전략 (lhs)
+# ---------------------------------------------------------------------------
+
+
+def test_strategy_lhs_reproducibility() -> None:
+    """LHS: 동일 seed·count·start_index → 동일 pose 시퀀스."""
+    a = sample_training_configs({}, "sfp", 8, 42, strategy="lhs")
+    b = sample_training_configs({}, "sfp", 8, 42, strategy="lhs")
+    for x, y in zip(a, b):
+        assert x.to_dict() == y.to_dict()
+
+
+def test_strategy_lhs_independence_per_batch() -> None:
+    """LHS는 배치 간 독립 — append 배치는 full 결과와 달라야 함 (의도된 동작)."""
+    full = sample_training_configs({}, "sfp", 10, 42, strategy="lhs")
+    b = sample_training_configs({}, "sfp", 5, 42, strategy="lhs", start_index=5)
+    assert any(
+        b[i].to_dict() != full[i + 5].to_dict() for i in range(5)
+    ), "LHS가 배치 간 독립하지 않음"
+
+
+def test_strategy_pose_within_ranges() -> None:
+    """LHS도 pose 값이 설정된 range 안에 있어야 함."""
+    nic_tr_lo, nic_tr_hi = -0.0215, 0.0234
+    nic_yaw_lo, nic_yaw_hi = -0.1745, 0.1745
+    sc_tr_lo, sc_tr_hi = -0.06, 0.055
+    for task in ("sfp", "sc"):
+        samples = sample_training_configs({}, task, 20, 42, strategy="lhs")
+        for s in samples:
+            for p in s.nic_poses.values():
+                assert nic_tr_lo <= p["translation"] <= nic_tr_hi
+                assert nic_yaw_lo <= p["yaw"] <= nic_yaw_hi
+            for p in s.sc_poses.values():
+                assert sc_tr_lo <= p["translation"] <= sc_tr_hi
+
+
+def test_strategy_invalid_raises() -> None:
+    try:
+        sample_training_configs({}, "sfp", 1, 42, strategy="bogus")
+    except ValueError:
+        return
+    raise AssertionError("bogus strategy에서 ValueError 안 남")
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -235,6 +280,10 @@ def main() -> int:
         ("빌더: SFP config 필드", test_build_sfp_config_has_required_fields),
         ("빌더: SC target module", test_build_sc_config_target_module),
         ("빌더: next_index + write", test_next_config_index_and_write),
+        ("전략: LHS 재현성", test_strategy_lhs_reproducibility),
+        ("전략: LHS 배치 간 독립", test_strategy_lhs_independence_per_batch),
+        ("전략: pose 범위 준수", test_strategy_pose_within_ranges),
+        ("전략: 잘못된 이름 ValueError", test_strategy_invalid_raises),
     ]
     failed = 0
     for name, fn in tests:

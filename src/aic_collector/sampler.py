@@ -311,12 +311,47 @@ def _resolve_scalar(cfg_ranges: dict, key: str) -> float:
     return float(v)
 
 
+# 설계행렬(LHS) 컬럼 매핑 — pose 값에 주입되는 18차원 [0, 1]^18.
+#   cols  0..4  : NIC rail_0..4 translation
+#   cols  5..9  : NIC rail_0..4 yaw
+#   cols 10..11 : SC  rail_0..1 translation
+#   cols 12..17 : gripper (x, y, z, roll, pitch, yaw)
+# 미활성 rail에 해당하는 컬럼은 무시 (LHS 층화 특성은 유지).
+_POSE_DESIGN_DIMS = 18
+
+
+def _generate_pose_design(
+    strategy: str,
+    count: int,
+    seed: int,
+    start_index: int,
+) -> np.ndarray:
+    """(count, 18) 설계행렬 생성 — [0, 1]^18.
+
+    - "lhs": 배치마다 새로 층화 샘플링. start_index를 seed에 섞어
+             배치 간 독립 재추첨 (LHS는 확장 불가).
+    """
+    try:
+        from scipy.stats import qmc
+    except ImportError as e:
+        raise ImportError(
+            f"{strategy}는 scipy 필요: uv add scipy. 또는 strategy='uniform' 사용."
+        ) from e
+
+    if strategy == "lhs":
+        batch_seed = int(np.uint64(seed) ^ np.uint64(start_index * 0x9E3779B97F4A7C15 & 0xFFFFFFFFFFFFFFFF))
+        sampler = qmc.LatinHypercube(d=_POSE_DESIGN_DIMS, seed=batch_seed)
+        return sampler.random(n=count)
+    raise ValueError(f"pose 설계행렬 미지원 strategy: {strategy!r}")
+
+
 def sample_training_configs(
     training_cfg: dict,
     task_type: str,
     count: int,
     seed: int,
     start_index: int = 0,
+    strategy: str = "uniform",
 ) -> list[TrainingSample]:
     """Training용 scene 샘플을 count개 생성.
 
@@ -327,6 +362,10 @@ def sample_training_configs(
         seed: 재현용 base seed. per-sample seed는 `seed + start_index + i`로 파생.
         start_index: append 모드에서 기존 번호 다음부터 이어서 생성할 때의 시작 인덱스.
                      target cycling과 seed 파생에 영향.
+        strategy: pose 값 샘플링 전략.
+                  - "uniform" (기본): 각 샘플마다 독립 uniform.
+                  - "lhs":     Latin Hypercube. 공간 채움 좋음, 샘플 수 적을 때 유리.
+                               배치(append) 간 독립 재추첨.
 
     Returns:
         List[TrainingSample] — 길이 count
@@ -335,6 +374,10 @@ def sample_training_configs(
         raise ValueError(f"task_type은 'sfp' 또는 'sc'여야 합니다 (받음: {task_type!r})")
     if count < 0:
         raise ValueError(f"count는 0 이상이어야 합니다 (받음: {count})")
+    if strategy not in ("uniform", "lhs"):
+        raise ValueError(
+            f"strategy는 'uniform' | 'lhs' 중 하나 (받음: {strategy!r})"
+        )
 
     scene_cfg = training_cfg.get("scene", {}) or {}
     ranges_cfg = training_cfg.get("ranges", {}) or {}
@@ -354,6 +397,15 @@ def sample_training_configs(
 
     cycle = SFP_TARGET_CYCLE if task_type == "sfp" else SC_TARGET_CYCLE
     max_rails = 5 if task_type == "sfp" else 2
+
+    # pose 설계행렬 (lhs 전용). uniform은 per-sample rng로 그때그때 추첨.
+    design: np.ndarray | None = None
+    if strategy == "lhs" and count > 0:
+        design = _generate_pose_design(strategy, count, seed, start_index)
+
+    def _design_map(i: int, col: int, lo: float, hi: float) -> float:
+        """설계행렬 [0,1] 값을 [lo, hi]로 affine."""
+        return float(lo + design[i, col] * (hi - lo))  # type: ignore[index]
 
     samples: list[TrainingSample] = []
     for i in range(count):
@@ -396,29 +448,48 @@ def sample_training_configs(
             else:
                 selected_sc = [int(rng.integers(0, 2))]
 
-        # 4) Pose 샘플링
+        # 4) Pose 샘플링 — uniform: per-sample rng / lhs: 설계행렬 룩업
         nic_poses: dict[int, dict[str, float]] = {}
-        for r in selected_nic:
-            nic_poses[r] = {
-                "translation": round(float(rng.uniform(*nic_tr)), 4),
-                "yaw":         round(float(rng.uniform(*nic_yaw_r)), 4),
-            }
         sc_poses: dict[int, dict[str, float]] = {}
-        for r in selected_sc:
-            sc_poses[r] = {
-                "translation": round(float(rng.uniform(*sc_tr)), 4),
-                "yaw":         0.0,
+        if design is None:
+            for r in selected_nic:
+                nic_poses[r] = {
+                    "translation": round(float(rng.uniform(*nic_tr)), 4),
+                    "yaw":         round(float(rng.uniform(*nic_yaw_r)), 4),
+                }
+            for r in selected_sc:
+                sc_poses[r] = {
+                    "translation": round(float(rng.uniform(*sc_tr)), 4),
+                    "yaw":         0.0,
+                }
+            # 5) Gripper offset (nominal ± 범위)
+            gripper = {
+                "x":     round(nominal["x"]     + float(rng.uniform(-g_xy, g_xy)), 6),
+                "y":     round(nominal["y"]     + float(rng.uniform(-g_xy, g_xy)), 6),
+                "z":     round(nominal["z"]     + float(rng.uniform(-g_z,  g_z)),  6),
+                "roll":  round(nominal["roll"]  + float(rng.uniform(-g_rpy, g_rpy)), 6),
+                "pitch": round(nominal["pitch"] + float(rng.uniform(-g_rpy, g_rpy)), 6),
+                "yaw":   round(nominal["yaw"]   + float(rng.uniform(-g_rpy, g_rpy)), 6),
             }
-
-        # 5) Gripper offset (nominal ± 범위)
-        gripper = {
-            "x":     round(nominal["x"]     + float(rng.uniform(-g_xy, g_xy)), 6),
-            "y":     round(nominal["y"]     + float(rng.uniform(-g_xy, g_xy)), 6),
-            "z":     round(nominal["z"]     + float(rng.uniform(-g_z,  g_z)),  6),
-            "roll":  round(nominal["roll"]  + float(rng.uniform(-g_rpy, g_rpy)), 6),
-            "pitch": round(nominal["pitch"] + float(rng.uniform(-g_rpy, g_rpy)), 6),
-            "yaw":   round(nominal["yaw"]   + float(rng.uniform(-g_rpy, g_rpy)), 6),
-        }
+        else:
+            for r in selected_nic:
+                nic_poses[r] = {
+                    "translation": round(_design_map(i, r,     nic_tr[0],    nic_tr[1]),    4),
+                    "yaw":         round(_design_map(i, 5 + r, nic_yaw_r[0], nic_yaw_r[1]), 4),
+                }
+            for r in selected_sc:
+                sc_poses[r] = {
+                    "translation": round(_design_map(i, 10 + r, sc_tr[0], sc_tr[1]), 4),
+                    "yaw":         0.0,
+                }
+            gripper = {
+                "x":     round(nominal["x"]     + _design_map(i, 12, -g_xy,  g_xy),  6),
+                "y":     round(nominal["y"]     + _design_map(i, 13, -g_xy,  g_xy),  6),
+                "z":     round(nominal["z"]     + _design_map(i, 14, -g_z,   g_z),   6),
+                "roll":  round(nominal["roll"]  + _design_map(i, 15, -g_rpy, g_rpy), 6),
+                "pitch": round(nominal["pitch"] + _design_map(i, 16, -g_rpy, g_rpy), 6),
+                "yaw":   round(nominal["yaw"]   + _design_map(i, 17, -g_rpy, g_rpy), 6),
+            }
 
         samples.append(TrainingSample(
             task_type=task_type,
@@ -434,6 +505,79 @@ def sample_training_configs(
         ))
 
     return samples
+
+
+# ---------------------------------------------------------------------------
+# 통합 샘플러 — ScenePlan 기반 (Phase 1)
+# ---------------------------------------------------------------------------
+#
+# 기존 sample_training_configs/sample_parameters는 wrapper로 유지하고,
+# sample_scenes()가 미래의 단일 진입점. Phase 1에서는 trials_per_config=1만
+# 지원하며, =3은 Phase 2+에서 추가된다.
+
+
+def training_sample_to_scene_plan(s: "TrainingSample") -> "ScenePlan":
+    """TrainingSample → ScenePlan (1-trial) 변환.
+
+    내부에서 scene_plan을 import (순환 import 회피용 lazy import 불필요 —
+    scene_plan은 sampler에 의존하지 않음).
+    """
+    from aic_collector.scene_plan import ScenePlan, TrialPlan
+
+    trial = TrialPlan(
+        task_type=s.task_type,
+        nic_rails=list(s.nic_rails),
+        nic_poses={int(k): dict(v) for k, v in s.nic_poses.items()},
+        sc_rails=list(s.sc_rails),
+        sc_poses={int(k): dict(v) for k, v in s.sc_poses.items()},
+        target_rail=int(s.target_rail),
+        target_port_name=s.target_port_name,
+        gripper=dict(s.gripper),
+    )
+    return ScenePlan(
+        sample_index=s.sample_index,
+        seed=s.seed,
+        trials=[trial],
+    )
+
+
+def sample_scenes(
+    cfg: dict,
+    task_type: str,
+    count: int,
+    seed: int,
+    start_index: int = 0,
+    trials_per_config: int = 1,
+) -> list["ScenePlan"]:
+    """통합 샘플링 — ScenePlan 리스트 반환.
+
+    Phase 1: trials_per_config=1만 지원. 내부적으로 sample_training_configs를
+             호출한 뒤 TrainingSample → ScenePlan으로 변환.
+
+    Args:
+        cfg: e2e config 전체 dict. `training` 섹션만 현재 사용.
+        task_type: "sfp" | "sc"
+        count: 생성할 샘플 수
+        seed: 재현용 base seed
+        start_index: append 모드에서 이어서 생성할 시작 인덱스
+        trials_per_config: 1(기본) / 3은 Phase 2+
+
+    Returns:
+        List[ScenePlan] — 길이 count. 각 ScenePlan은 길이 1의 trials.
+    """
+    if trials_per_config != 1:
+        raise NotImplementedError(
+            f"trials_per_config={trials_per_config}은 Phase 2+에서 지원. "
+            "Phase 1은 1만 가능."
+        )
+
+    training_cfg = cfg.get("training", {}) if isinstance(cfg, dict) else {}
+    strategy = str(training_cfg.get("param_strategy", "uniform"))
+    samples = sample_training_configs(
+        training_cfg, task_type, count, seed,
+        start_index=start_index, strategy=strategy,
+    )
+    return [training_sample_to_scene_plan(s) for s in samples]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,45 @@
+# 랜덤화 expert 데이터 대량 수집 config
+#
+# 목적: 다양한 포트 위치에서 CheatCode expert 데이터 수집
+# 용도: IL 재학습, 제어 모듈 학습, 비전 모듈 학습 등 범용
+#
+# 사용법:
+#   uv run aic-prefect-run --config configs/hybrid_training_data.yaml
+#   uv run aic-prefect-run --config configs/hybrid_training_data.yaml --runs 100
+
+schema_version: "0.1"
+
+collection:
+  runs: 50                                # 50 runs × 3 trials = 150 episodes
+  trials: [1, 2, 3]                       # 전체 trial (SFP×2 + SC×1)
+  output_root: ~/aic_randomized_data      # 새 경로
+  seed: 42                                # 재현용 seed
+  collect_episode: false                  # rosbag + scoring만
+
+policy:
+  default: cheatcode                      # ground truth 기반 expert 데이터
+
+parameters:
+  # AIC 툴킷 #445 업데이트 반영 — 대회 실제 랜덤화 범위와 동일
+  nic0_translation: { min: -0.0215, max:  0.0234 }
+  nic0_yaw:         { min: -0.1745, max:  0.1745 }   # ±10°
+  nic1_translation: { min: -0.0215, max:  0.0234 }
+  nic1_yaw:         { min: -0.1745, max:  0.1745 }
+  sc0_translation:  { min: -0.06,   max:  0.055  }
+  sc0_yaw:          { min: -0.1745, max:  0.1745 }
+  sc1_translation:  { min: -0.06,   max:  0.055  }
+  sc1_yaw:          { min: -0.1745, max:  0.1745 }
+
+sampling:
+  strategy: lhs                           # 50 runs으로 8차원 공간 균등 커버
+
+tags:
+  schema_version: "0.0.0"
+  auto:
+    success_from_scoring: true
+    cable_type_from_metadata: true
+
+engine:
+  ground_truth: true                      # CheatCode에 필요
+  use_compressed: true                    # JPEG 압축 (~3GB/run, 총 ~150GB)
+  template: configs/community_random_config.yaml

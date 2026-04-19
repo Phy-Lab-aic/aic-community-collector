@@ -3,3 +3,8 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
+
+# local/runtime
+.claude/
+.tmp/
+configs/train/

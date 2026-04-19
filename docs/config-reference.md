@@ -1,11 +1,27 @@
 # Config Reference
 
-`configs/e2e_*.yaml` 파일(Sweep 모드)과 `configs/train/{sfp,sc}/config_*.yaml` 파일(Training 모드)의 항목 설명.
+`configs/e2e_*.yaml`(legacy Sweep)와 `configs/train/{sfp,sc}/{pending,running,done,failed}/config_*.yaml`(작업 큐) 의 항목 설명.
 
 ## 두 가지 Config 유형
 
-- **Sweep config** (`configs/e2e_*.yaml`) — 수집 도구(Prefect flow)가 읽어 파라미터를 샘플링하면서 수집을 실행.
-- **Training config** (`configs/train/{sfp,sc}/config_*.yaml`) — 학습 데이터용 엔진 config. 각 파일이 하나의 trial을 바로 실행할 수 있도록 **완전한 scene**을 이미 포함하고 있음(플레이스홀더 없음). Web UI의 Training 모드에서 일괄 생성됨.
+- **Sweep config** (`configs/e2e_*.yaml`, legacy) — 기존 "🚀 수집" 탭에서 사용. Prefect flow가 파라미터 샘플링·엔진 config 생성·실행을 한 흐름으로 처리. 신규 작업은 Producer/Consumer 큐 사용 권장.
+- **Queue config** (`configs/train/{sfp,sc}/{pending,running,done,failed}/config_*.yaml`) — 각 파일이 **완전한 scene**을 포함하는 엔진 config. **📋 수집 관리** 탭이 생성해 `pending/`에 적재, **🏃 작업 실행** 탭의 워커가 atomic rename으로 `running/` → `done/` / `failed/`로 이동시키며 소비.
+
+## 작업 큐 디렉토리 규약 (Phase 2a+)
+
+```
+configs/train/
+  ├ sfp/
+  │   ├ pending/   ← 생성 직후 (워커가 소비 대상)
+  │   ├ running/   ← 실행 중
+  │   ├ done/      ← 성공
+  │   └ failed/    ← 실패
+  └ sc/ (동일 구조)
+```
+
+- 파일명: `config_{task_type}_{NNNN}.yaml` (NNNN은 4자리 sample_index).
+- append 모드: 모든 상태 디렉토리 + legacy(플랫 *.yaml)를 스캔해 `max(NNNN) + 1`부터 부여. 중복 없음.
+- Legacy 파일(플랫 구조): 관리 탭의 "Legacy → pending/ 이동" 버튼으로 일괄 마이그레이션 가능. pending에 동일 이름이 있으면 건너뜀(데이터 손실 방지).
 
 ## Sweep config 전체 구조
 
