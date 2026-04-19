@@ -175,7 +175,8 @@ configs/train/
 
 - `Member` 선택기를 먼저 고릅니다.
 - `start_index`, scene 설정, randomization 파라미터는 preset에서 내려오며 team mode에서는 잠깁니다.
-- `SFP configs` 수량을 정한 뒤 `📁 큐에 추가 (...)` 버튼을 누르면 됩니다. `SC configs`는 preset 기준으로 고정됩니다.
+- team mode는 현재 **SFP config 생성만 지원**합니다. `SFP configs` 수량을 정한 뒤 `📁 큐에 추가 (...)` 버튼을 누르면 됩니다. `SC configs` 생성은 team mode에서 지원하지 않습니다.
+- `큐 루트`는 각 사용자의 **로컬 출력 위치**만 정합니다. 슬롯 예약은 로컬 queue root와 무관하게 전역 `configs/team/seed_ledger.yaml` 기준으로 처리됩니다.
 - 각 submit은 `configs/team/seed_ledger.yaml`에 claim을 추가합니다.
 - solo mode로 돌아가려면 `configs/team/preset.yaml`을 이름 변경하거나 삭제하면 됩니다.
 

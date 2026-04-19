@@ -1523,7 +1523,13 @@ if st is not None:
                     team_mode_error = exc
                     st.error(f"팀 preset 적용 실패: {team_mode_error}")
                     team_mode_active = False
-    
+
+        if team_mode_active:
+            st.caption(
+                "Team mode는 현재 SFP config 생성만 지원합니다. `큐 루트`는 로컬 config 출력 위치만 바꾸고, "
+                f"슬롯 예약은 항상 전역 ledger `{LEDGER_PATH}` 기준으로 처리됩니다."
+            )
+
         st.divider()
     
         # 큐 상태 (task_type별 가로 stacked bar 1줄)
