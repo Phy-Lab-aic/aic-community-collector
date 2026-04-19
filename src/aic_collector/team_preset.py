@@ -343,6 +343,59 @@ def slot_range(preset: TeamPreset, member_id: str) -> tuple[int, int]:
     return slot_start, slot_start + preset.shard_stride
 
 
+def _next_start_index_from_highest_claimed(
+    highest_index: int | None,
+    *,
+    member_id: str,
+    slot_start: int,
+    slot_end_exclusive: int,
+) -> int:
+    if highest_index is None:
+        return slot_start
+    next_index = highest_index + 1
+    if next_index >= slot_end_exclusive:
+        raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
+    return next_index
+
+
+def _highest_claimed_index_in_slot(
+    entries: list[dict[str, Any]],
+    *,
+    member_id: str,
+    task_type: str,
+    slot_start: int,
+    slot_end_exclusive: int,
+) -> int | None:
+    highest_index: int | None = None
+
+    for entry in entries:
+        if entry.get("member_id") != member_id or entry.get("task_type") != task_type:
+            continue
+
+        start_index = entry.get("start_index")
+        count = entry.get("count")
+        if (
+            isinstance(start_index, bool)
+            or isinstance(count, bool)
+            or not isinstance(start_index, int)
+            or not isinstance(count, int)
+            or count <= 0
+        ):
+            continue
+
+        end_index = start_index + count - 1
+        if end_index < slot_start or start_index >= slot_end_exclusive:
+            continue
+
+        highest_index = (
+            min(end_index, slot_end_exclusive - 1)
+            if highest_index is None
+            else max(highest_index, min(end_index, slot_end_exclusive - 1))
+        )
+
+    return highest_index
+
+
 def next_start_index_in_slot(
     preset: TeamPreset, member_id: str, queue_root: Path, task_type: str
 ) -> int:
@@ -368,12 +421,12 @@ def next_start_index_in_slot(
                     else max(highest_index, config_index)
                 )
 
-    if highest_index is None:
-        return slot_start
-    next_index = highest_index + 1
-    if next_index >= slot_end_exclusive:
-        raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
-    return next_index
+    return _next_start_index_from_highest_claimed(
+        highest_index,
+        member_id=member_id,
+        slot_start=slot_start,
+        slot_end_exclusive=slot_end_exclusive,
+    )
 
 
 def _count_files_in_range(
@@ -414,8 +467,22 @@ def submit_team_claim(
     requested_count = preset.tasks[task_type]
     with _ledger_lock(ledger_path):
         entries = _ledger_entries(ledger_path)
+        slot_start, slot_end_exclusive = slot_range(preset, member_id)
         start_index = next_start_index_in_slot(preset, member_id, queue_root, task_type)
-        _, slot_end_exclusive = slot_range(preset, member_id)
+        highest_claimed_index = _highest_claimed_index_in_slot(
+            entries,
+            member_id=member_id,
+            task_type=task_type,
+            slot_start=slot_start,
+            slot_end_exclusive=slot_end_exclusive,
+        )
+        if highest_claimed_index is not None and highest_claimed_index >= start_index:
+            start_index = _next_start_index_from_highest_claimed(
+                highest_claimed_index,
+                member_id=member_id,
+                slot_start=slot_start,
+                slot_end_exclusive=slot_end_exclusive,
+            )
         if start_index + requested_count > slot_end_exclusive:
             raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
 

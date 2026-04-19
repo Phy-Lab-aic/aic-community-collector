@@ -119,6 +119,24 @@ def test_build_team_submit_preset_overrides_runtime_sfp_count_only() -> None:
     assert "sfp" not in preset.tasks
 
 
+def test_build_team_mode_state_rejects_nonzero_sc_default_count(tmp_path: Path) -> None:
+    preset = _preset(tasks={"sfp_default_count": 4, "sc_default_count": 1})
+
+    with pytest.raises(PresetError, match="tasks.sc_default_count"):
+        build_team_mode_state(
+            preset,
+            queue_root=tmp_path / "queue",
+            member_id="m0",
+        )
+
+
+def test_build_team_submit_preset_rejects_nonzero_sc_default_count() -> None:
+    preset = _preset(tasks={"sfp_default_count": 8, "sc_default_count": 1})
+
+    with pytest.raises(PresetError, match="tasks.sc_default_count"):
+        build_team_submit_preset(preset, sfp_count=5)
+
+
 def test_build_team_preview_scene_config_threads_fixed_target_into_collection() -> None:
     preset = _preset()
     preset = TeamPreset(

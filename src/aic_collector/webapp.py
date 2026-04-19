@@ -1215,6 +1215,13 @@ def build_team_preview_scene_config(preset: TeamPreset) -> dict[str, Any]:
     return preview_cfg
 
 
+def _require_sfp_only_team_mode_tasks(preset: TeamPreset) -> int:
+    default_sfp_count = _preset_task_count(preset, "sfp_default_count")
+    if _preset_task_count(preset, "sc_default_count") != 0:
+        raise PresetError("Unsupported team preset task count: tasks.sc_default_count must be 0")
+    return default_sfp_count
+
+
 def build_team_mode_state(
     preset: TeamPreset,
     *,
@@ -1238,7 +1245,7 @@ def build_team_mode_state(
         preview_filename = None
         slot_exhausted = True
 
-    default_sfp_count = min(_preset_task_count(preset, "sfp_default_count"), remaining_slots)
+    default_sfp_count = min(_require_sfp_only_team_mode_tasks(preset), remaining_slots)
     requested_value = default_sfp_count if requested_sfp_count is None else int(requested_sfp_count)
     if requested_value < 0:
         raise PresetError("SFP count cannot be negative in team mode")
@@ -1258,6 +1265,7 @@ def build_team_mode_state(
 
 
 def build_team_submit_preset(preset: TeamPreset, *, sfp_count: int) -> TeamPreset:
+    _require_sfp_only_team_mode_tasks(preset)
     if sfp_count < 0:
         raise PresetError("SFP count cannot be negative in team mode")
 
@@ -1872,11 +1880,11 @@ if st is not None:
             preview_parts = []
             if mgr_sfp_count > 0:
                 preview_parts.append(
-                    f"SFP: config_sfp_{start_sfp:04d} ~ {start_sfp + mgr_sfp_count - 1:04d}"
+                    f"SFP: config_sfp_{start_sfp:06d} ~ {start_sfp + mgr_sfp_count - 1:06d}"
                 )
             if mgr_sc_count > 0:
                 preview_parts.append(
-                    f"SC: config_sc_{start_sc:04d} ~ {start_sc + mgr_sc_count - 1:04d}"
+                    f"SC: config_sc_{start_sc:06d} ~ {start_sc + mgr_sc_count - 1:06d}"
                 )
             if preview_parts:
                 st.info("생성될 파일: " + " · ".join(preview_parts))

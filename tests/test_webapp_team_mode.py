@@ -12,7 +12,13 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from aic_collector.job_queue import QueueState, queue_dir, write_plan
-from aic_collector.team_preset import SlotExhausted, SubmitResult, TeamPreset, submit_team_claim
+from aic_collector.team_preset import (
+    SlotExhausted,
+    SubmitResult,
+    TeamPreset,
+    append_claim,
+    submit_team_claim,
+)
 
 TEMPLATE_PATH = PROJECT_DIR / "configs/community_random_config.yaml"
 
@@ -120,6 +126,41 @@ def test_submit_team_claim_second_submit_for_same_member_uses_next_index(tmp_pat
         "config_sfp_000000.yaml",
         "config_sfp_000001.yaml",
         "config_sfp_000002.yaml",
+        "config_sfp_000003.yaml",
+        "config_sfp_000004.yaml",
+        "config_sfp_000005.yaml",
+    ]
+
+
+def test_submit_team_claim_skips_stale_ledger_range_without_queue_files(tmp_path: Path) -> None:
+    queue_root = tmp_path / "queue"
+    ledger_path = tmp_path / "ledger.yaml"
+    preset = _preset(tasks={"sfp": 3})
+
+    append_claim(
+        ledger_path,
+        member_id="m0",
+        task_type="sfp",
+        base_seed=preset.base_seed,
+        start_index=0,
+        count=3,
+        strategy=preset.strategy,
+        queue_root=queue_root,
+        preset_hash=preset.preset_hash,
+    )
+
+    result = submit_team_claim(
+        preset,
+        member_id="m0",
+        task_type="sfp",
+        queue_root=queue_root,
+        ledger_path=ledger_path,
+        template_path=TEMPLATE_PATH,
+    )
+
+    assert result.start_index == 3
+    assert [entry["start_index"] for entry in _ledger_entries(ledger_path)] == [0, 3]
+    assert [path.name for path in _pending_configs(queue_root, "sfp")] == [
         "config_sfp_000003.yaml",
         "config_sfp_000004.yaml",
         "config_sfp_000005.yaml",
