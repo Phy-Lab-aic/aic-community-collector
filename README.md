@@ -173,9 +173,9 @@ configs/train/
 
 `configs/team/preset.yaml` 파일이 있으면 **작업 관리 탭**이 자동으로 team mode로 바뀝니다.
 
-- `Member ID`를 먼저 선택합니다.
+- `Member` 선택기를 먼저 고릅니다.
 - `start_index`, scene 설정, randomization 파라미터는 preset에서 내려오며 team mode에서는 잠깁니다.
-- `SFP configs` 수량을 정한 뒤 team submit 버튼을 누르면 됩니다. `SC configs`는 preset 기준으로 고정됩니다.
+- `SFP configs` 수량을 정한 뒤 `📁 큐에 추가 (...)` 버튼을 누르면 됩니다. `SC configs`는 preset 기준으로 고정됩니다.
 - 각 submit은 `configs/team/seed_ledger.yaml`에 claim을 추가합니다.
 - solo mode로 돌아가려면 `configs/team/preset.yaml`을 이름 변경하거나 삭제하면 됩니다.
 
@@ -235,7 +235,7 @@ configs/train/
 
 ```
 ~/aic_community_e2e/
-└── run_20260419_101852_sfp_000006/
+└── run_20260419_101852_sfp_0006/
     ├── config.yaml           # 실제 사용된 엔진 config
     ├── policy.txt            # 사용된 policy
     ├── seed.txt              # 샘플링 seed
