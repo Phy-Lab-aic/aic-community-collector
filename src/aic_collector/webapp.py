@@ -53,9 +53,11 @@ if __name__ == "__main__" and "streamlit" not in sys.modules:
 
         _PREFECT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         log_fh = open(_PREFECT_LOG_FILE, "a")
+        # 0.0.0.0 바인딩 — webapp이 LAN으로 노출된 경우(--server.address 0.0.0.0)
+        # Prefect 대시보드 링크도 같은 호스트에서 열려야 하므로 외부 접근 허용.
         p = subprocess.Popen(
             ["uv", "run", "prefect", "server", "start",
-             "--host", "127.0.0.1", "--port", "4200"],
+             "--host", "0.0.0.0", "--port", "4200"],
             stdout=log_fh, stderr=subprocess.STDOUT,
             cwd=str(Path(__file__).resolve().parent.parent.parent),
             start_new_session=True,
@@ -162,13 +164,13 @@ def ensure_prefect_server(wait_sec: int = 30) -> bool:
         except (ValueError, ProcessLookupError, PermissionError):
             PREFECT_PID_FILE.unlink(missing_ok=True)
 
-    # 새로 기동
+    # 새로 기동 — webapp이 LAN 노출 구성이면 Prefect UI도 외부 접근 필요
     PREFECT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(PREFECT_LOG_FILE, "a")
     proc = subprocess.Popen(
         [
             "uv", "run", "prefect", "server", "start",
-            "--host", "127.0.0.1", "--port", str(PREFECT_PORT),
+            "--host", "0.0.0.0", "--port", str(PREFECT_PORT),
         ],
         stdout=log_fh, stderr=subprocess.STDOUT,
         cwd=str(PROJECT_DIR),
@@ -1061,7 +1063,7 @@ _prefect_up = _start_prefect_once()
 if not _prefect_up:
     st.warning(
         f"⚠️ Prefect 서버 기동에 실패했어요. 수동으로 `uv run prefect server start "
-        f"--host 127.0.0.1 --port {PREFECT_PORT}` 실행 후 새로고침하세요. "
+        f"--host 0.0.0.0 --port {PREFECT_PORT}` 실행 후 새로고침하세요. "
         f"로그: `{PREFECT_LOG_FILE}`"
     )
 
