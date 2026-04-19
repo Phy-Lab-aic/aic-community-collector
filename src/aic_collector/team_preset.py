@@ -92,6 +92,7 @@ def _validate_members(value: Any) -> tuple[Mapping[str, str], ...]:
         raise PresetError("Invalid members field: members")
 
     members: list[Mapping[str, str]] = []
+    member_ids: set[str] = set()
     for index, member in enumerate(value):
         if not isinstance(member, dict):
             raise PresetError(f"Invalid member field: members[{index}]")
@@ -105,6 +106,10 @@ def _validate_members(value: Any) -> tuple[Mapping[str, str], ...]:
             raise PresetError(f"Invalid member field: members[{index}].name")
 
         normalized = {str(k): str(v) for k, v in member.items()}
+        member_id = normalized["id"]
+        if member_id in member_ids:
+            raise PresetError(f"Invalid members field: duplicate member id: {member_id}")
+        member_ids.add(member_id)
         members.append(MappingProxyType(normalized))
     return tuple(members)
 
@@ -149,7 +154,10 @@ def next_start_index_in_slot(
 
     if highest_index is None:
         return slot_start
-    return highest_index + 1
+    next_index = highest_index + 1
+    if next_index >= slot_end_exclusive:
+        raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
+    return next_index
 
 
 def load_preset(path: Path) -> TeamPreset | None:

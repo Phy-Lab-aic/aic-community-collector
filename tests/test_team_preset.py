@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 from aic_collector.job_queue import QueueState, legacy_dir, queue_dir
 from aic_collector.team_preset import (
     PresetError,
+    SlotExhausted,
     TeamPreset,
     load_preset,
     next_start_index_in_slot,
@@ -317,6 +318,32 @@ members:
         preset.members[0]["name"] = "Changed"
 
 
+def test_load_preset_rejects_duplicate_member_ids(tmp_path: Path) -> None:
+    path = _write_preset(
+        tmp_path / "preset.yaml",
+        """
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {}
+scene: {}
+tasks:
+  sfp: 12
+members:
+  - id: alpha
+    name: Alpha
+  - id: alpha
+    name: Alpha Clone
+""".strip(),
+    )
+
+    with pytest.raises(PresetError, match="duplicate member id"):
+        load_preset(path)
+
+
 def test_slot_range_uses_member_position_and_stride() -> None:
     preset = TeamPreset(
         base_seed=100,
@@ -425,3 +452,27 @@ def test_next_start_index_in_slot_ignores_other_slots(tmp_path: Path) -> None:
     (legacy / "config_sfp_0027.yaml").write_text("x", encoding="utf-8")
 
     assert next_start_index_in_slot(preset, "beta", tmp_path, "sfp") == 10
+
+
+def test_next_start_index_in_slot_raises_when_slot_is_full(tmp_path: Path) -> None:
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=10,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={},
+        tasks={"sfp": 1},
+        members=(
+            {"id": "alpha", "name": "Alpha"},
+            {"id": "beta", "name": "Beta"},
+        ),
+        preset_hash="sha256:test",
+    )
+
+    failed_dir = queue_dir(tmp_path, "sfp", QueueState.FAILED)
+    failed_dir.mkdir(parents=True)
+    (failed_dir / "config_sfp_0019.yaml").write_text("x", encoding="utf-8")
+
+    with pytest.raises(SlotExhausted, match="beta"):
+        next_start_index_in_slot(preset, "beta", tmp_path, "sfp")
