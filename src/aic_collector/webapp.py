@@ -1118,17 +1118,26 @@ def _preset_range_spread(
 
 
 def _validated_fixed_target_map(preset: TeamPreset) -> dict[str, dict[str, Any] | None] | None:
+    from aic_collector.sampler import SC_TARGET_CYCLE, SFP_TARGET_CYCLE
+
     fixed_target = preset.scene.get("fixed_target")
     if fixed_target is None:
         return None
     if not isinstance(fixed_target, dict):
         raise PresetError("Invalid preset fixed_target: scene.fixed_target")
 
+    allowed_targets = {
+        "sfp": set(SFP_TARGET_CYCLE),
+        "sc": set(SC_TARGET_CYCLE),
+    }
     validated: dict[str, dict[str, Any] | None] = {}
     for task_type, payload in fixed_target.items():
         field_path = f"scene.fixed_target.{task_type}"
+        task_name = str(task_type)
+        if task_name not in allowed_targets:
+            raise PresetError(f"Invalid preset fixed_target: {field_path}")
         if payload is None:
-            validated[str(task_type)] = None
+            validated[task_name] = None
             continue
         if not isinstance(payload, dict):
             raise PresetError(f"Invalid preset fixed_target: {field_path}")
@@ -1139,12 +1148,15 @@ def _validated_fixed_target_map(preset: TeamPreset) -> dict[str, dict[str, Any] 
         port = payload["port"]
         if isinstance(rail, bool) or not isinstance(rail, int):
             raise PresetError(f"Invalid preset fixed_target: {field_path}")
-        if port is None:
+        if port is None or isinstance(port, bool):
+            raise PresetError(f"Invalid preset fixed_target: {field_path}")
+        port_name = str(port)
+        if (int(rail), port_name) not in allowed_targets[task_name]:
             raise PresetError(f"Invalid preset fixed_target: {field_path}")
 
-        validated[str(task_type)] = {
+        validated[task_name] = {
             "rail": int(rail),
-            "port": str(port),
+            "port": port_name,
         }
     return validated
 

@@ -269,6 +269,54 @@ def test_build_team_preview_scene_config_rejects_malformed_fixed_target_entries(
         build_team_preview_scene_config(preset)
 
 
+def test_build_team_preview_scene_config_rejects_invalid_sfp_target_tuple() -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=10,
+        index_width=5,
+        strategy="uniform",
+        ranges=_preset().ranges,
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+            "fixed_target": {
+                "sfp": {"rail": 4, "port": "sfp_port_9"},
+            },
+        },
+        tasks={"sfp_default_count": 1, "sc_default_count": 0},
+        members=({"id": "m0", "name": "Member 0"},),
+        preset_hash="sha256:test",
+    )
+
+    with pytest.raises(PresetError, match="scene.fixed_target.sfp"):
+        build_team_preview_scene_config(preset)
+
+
+def test_build_team_preview_scene_config_rejects_boolean_port() -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=10,
+        index_width=5,
+        strategy="uniform",
+        ranges=_preset().ranges,
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+            "fixed_target": {
+                "sfp": {"rail": 0, "port": True},
+            },
+        },
+        tasks={"sfp_default_count": 1, "sc_default_count": 0},
+        members=({"id": "m0", "name": "Member 0"},),
+        preset_hash="sha256:test",
+    )
+
+    with pytest.raises(PresetError, match="scene.fixed_target.sfp"):
+        build_team_preview_scene_config(preset)
+
+
 def test_render_scene_svg_threads_fixed_target_to_sampler(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
