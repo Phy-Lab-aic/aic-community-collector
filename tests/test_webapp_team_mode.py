@@ -11,8 +11,8 @@ import yaml
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-from aic_collector.job_queue import QueueState, queue_dir, write_plan
-from aic_collector.team_preset import (
+from aic_collector.job_queue import QueueState, queue_dir, write_plan  # noqa: E402
+from aic_collector.team_preset import (  # noqa: E402
     SlotExhausted,
     SubmitResult,
     TeamPreset,
@@ -242,10 +242,8 @@ def test_submit_team_claim_partial_write_failure_adjusts_ledger_count_for_writte
     ledger_path = tmp_path / "ledger.yaml"
 
     def partial_write(plans: list[object], root: Path, template_path: Path, index_width: int = 6) -> list[Path]:
-        written = [
-            write_plan(plans[0], root, template_path, index_width=index_width),
-            write_plan(plans[1], root, template_path, index_width=index_width),
-        ]
+        write_plan(plans[0], root, template_path, index_width=index_width)
+        write_plan(plans[1], root, template_path, index_width=index_width)
         pending_dir = queue_dir(root, "sfp", QueueState.PENDING)
         pending_dir.mkdir(parents=True, exist_ok=True)
         (pending_dir / "config_sfp_999999.yaml").write_text("unrelated: true\n", encoding="utf-8")

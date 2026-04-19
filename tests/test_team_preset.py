@@ -12,8 +12,8 @@ import yaml
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-from aic_collector.job_queue import QueueState, legacy_dir, queue_dir
-from aic_collector.team_preset import (
+from aic_collector.job_queue import QueueState, legacy_dir, queue_dir  # noqa: E402
+from aic_collector.team_preset import (  # noqa: E402
     PresetError,
     SlotExhausted,
     TeamPreset,

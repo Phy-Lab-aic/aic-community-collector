@@ -9,9 +9,9 @@ import pytest
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-from aic_collector.job_queue import QueueState, queue_dir
-from aic_collector.team_preset import PresetError, TeamPreset, append_claim, submit_team_claim
-from aic_collector.webapp import (
+from aic_collector.job_queue import QueueState, queue_dir  # noqa: E402
+from aic_collector.team_preset import PresetError, TeamPreset, append_claim, submit_team_claim  # noqa: E402
+from aic_collector.webapp import (  # noqa: E402
     build_team_mode_state,
     build_team_preview_scene_config,
     build_validated_preset_ranges,

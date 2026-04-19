@@ -18,7 +18,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -100,7 +99,7 @@ _SRC_DIR = str(PROJECT_DIR / "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from aic_collector.team_preset import (
+from aic_collector.team_preset import (  # noqa: E402
     PresetError,
     SlotExhausted,
     TeamPreset,
@@ -309,11 +308,15 @@ def render_parameters_svg(user_ranges: dict) -> str:
     u_gr_z    = user_ranges["gripper_z"]
     u_gr_rpy  = user_ranges["gripper_rpy"]
 
-    C_NIC = "#0d6efd"; C_NIC_L = "#cfe2ff"
-    C_SC  = "#198754"; C_SC_L  = "#d1e7dd"
-    C_GR  = "#fd7e14"; C_GR_L  = "#ffe5d0"
+    C_NIC = "#0d6efd"
+    C_NIC_L = "#cfe2ff"
+    C_SC = "#198754"
+    C_SC_L = "#d1e7dd"
+    C_GR = "#fd7e14"
+    C_GR_L = "#ffe5d0"
     C_RAIL = "#adb5bd"
-    C_TEXT = "#212529"; C_MUTED = "#868e96"
+    C_TEXT = "#212529"
+    C_MUTED = "#868e96"
 
     e: list[str] = []
 
@@ -365,13 +368,17 @@ def render_parameters_svg(user_ranges: dict) -> str:
     e.append(f'<rect x="{yax - mw/2}" y="{yay - mh/2}" width="{mw}" height="{mh}" rx="2" fill="{C_NIC_L}" stroke="{C_NIC}" stroke-width="1.2" />')
     if yaw_abs > 1e-4:
         arc_r = 32
-        a_x1 = yax + arc_r * math.sin(-yaw_abs); a_y1 = yay - arc_r * math.cos(-yaw_abs)
-        a_x2 = yax + arc_r * math.sin(+yaw_abs); a_y2 = yay - arc_r * math.cos(+yaw_abs)
+        a_x1 = yax + arc_r * math.sin(-yaw_abs)
+        a_y1 = yay - arc_r * math.cos(-yaw_abs)
+        a_x2 = yax + arc_r * math.sin(+yaw_abs)
+        a_y2 = yay - arc_r * math.cos(+yaw_abs)
         e.append(f'<path d="M {a_x1:.2f} {a_y1:.2f} A {arc_r} {arc_r} 0 0 1 {a_x2:.2f} {a_y2:.2f}" fill="none" stroke="{C_NIC}" stroke-width="2" />')
     aic_yaw_v = AIC_NIC_YAW[1]
     arc_r_aic = 46
-    a_x1 = yax + arc_r_aic * math.sin(-aic_yaw_v); a_y1 = yay - arc_r_aic * math.cos(-aic_yaw_v)
-    a_x2 = yax + arc_r_aic * math.sin(+aic_yaw_v); a_y2 = yay - arc_r_aic * math.cos(+aic_yaw_v)
+    a_x1 = yax + arc_r_aic * math.sin(-aic_yaw_v)
+    a_y1 = yay - arc_r_aic * math.cos(-aic_yaw_v)
+    a_x2 = yax + arc_r_aic * math.sin(+aic_yaw_v)
+    a_y2 = yay - arc_r_aic * math.cos(+aic_yaw_v)
     e.append(f'<path d="M {a_x1:.2f} {a_y1:.2f} A {arc_r_aic} {arc_r_aic} 0 0 1 {a_x2:.2f} {a_y2:.2f}" fill="none" stroke="{C_MUTED}" stroke-width="1" stroke-dasharray="3 2" />')
     e.append(f'<text x="{yax}" y="{yay + 58}" font-size="10" fill="{C_NIC}" text-anchor="middle" font-weight="600">yaw ≤ ±{yaw_deg:.1f}°</text>')
     e.append(f'<text x="{yax}" y="{yay + 71}" font-size="8" fill="{C_MUTED}" text-anchor="middle">AIC ±10°</text>')
@@ -462,13 +469,17 @@ def render_parameters_svg(user_ranges: dict) -> str:
     vis_aic = AIC_GRIP_RPY * vis_scale
     vis_user = u_gr_rpy * vis_scale
     r_arc_aic = 55
-    ax1 = rpy_cx + r_arc_aic * math.sin(-vis_aic); ay1 = rpy_cy - r_arc_aic * math.cos(-vis_aic)
-    ax2 = rpy_cx + r_arc_aic * math.sin(+vis_aic); ay2 = rpy_cy - r_arc_aic * math.cos(+vis_aic)
+    ax1 = rpy_cx + r_arc_aic * math.sin(-vis_aic)
+    ay1 = rpy_cy - r_arc_aic * math.cos(-vis_aic)
+    ax2 = rpy_cx + r_arc_aic * math.sin(+vis_aic)
+    ay2 = rpy_cy - r_arc_aic * math.cos(+vis_aic)
     e.append(f'<path d="M {ax1:.2f} {ay1:.2f} A {r_arc_aic} {r_arc_aic} 0 0 1 {ax2:.2f} {ay2:.2f}" fill="none" stroke="{C_MUTED}" stroke-width="1" stroke-dasharray="3 2" />')
     if u_gr_rpy > 1e-4:
         r_arc_u = 40
-        ux1 = rpy_cx + r_arc_u * math.sin(-vis_user); uy1 = rpy_cy - r_arc_u * math.cos(-vis_user)
-        ux2 = rpy_cx + r_arc_u * math.sin(+vis_user); uy2 = rpy_cy - r_arc_u * math.cos(+vis_user)
+        ux1 = rpy_cx + r_arc_u * math.sin(-vis_user)
+        uy1 = rpy_cy - r_arc_u * math.cos(-vis_user)
+        ux2 = rpy_cx + r_arc_u * math.sin(+vis_user)
+        uy2 = rpy_cy - r_arc_u * math.cos(+vis_user)
         e.append(f'<path d="M {ux1:.2f} {uy1:.2f} A {r_arc_u} {r_arc_u} 0 0 1 {ux2:.2f} {uy2:.2f}" fill="none" stroke="{C_GR}" stroke-width="3" />')
     e.append(f'<line x1="{rpy_cx}" y1="{rpy_cy}" x2="{rpy_cx}" y2="{rpy_cy - 62}" stroke="{C_TEXT}" stroke-width="1" stroke-dasharray="2 2" />')
     e.append(f'<circle cx="{rpy_cx}" cy="{rpy_cy}" r="3" fill="{C_GR}" />')
@@ -654,14 +665,14 @@ def render_scene_svg(
         f'rx="10" fill="#fafbfc" stroke="#6c757d" stroke-width="1.5" />'
     )
     elements.append(
-        f'<text x="16" y="26" font-size="12" font-weight="bold" fill="#212529">'
-        f'🎬 실제 샘플 예시 3개 — 각 trial(=config 파일)마다 rail 조합이 다름'
-        f'</text>'
+        '<text x="16" y="26" font-size="12" font-weight="bold" fill="#212529">'
+        '🎬 실제 샘플 예시 3개 — 각 trial(=config 파일)마다 rail 조합이 다름'
+        '</text>'
     )
     elements.append(
         f'<text x="16" y="42" font-size="10" fill="{MUTED}">'
         f'task={task_type.upper()} · seed={seed} · target cycling={"ON" if target_cycling else "OFF"}'
-        f'</text>'
+        '</text>'
     )
 
     # 각 sample mini board
@@ -806,8 +817,8 @@ def render_scene_svg(
 
     # 하단 설명
     desc_lines = [
-        f"💡 같은 seed/설정이라도 sample_index마다 활성 rail 조합이 다릅니다. "
-        f"target(🎯)은 반드시 활성 rail에 포함.",
+        "💡 같은 seed/설정이라도 sample_index마다 활성 rail 조합이 다릅니다. "
+        "target(🎯)은 반드시 활성 rail에 포함.",
     ]
     if task_type == "sfp":
         desc_lines.append(
@@ -1393,7 +1404,7 @@ if st is not None:
             for c in fixable:
                 col_name, col_btn = st.columns([3, 1])
                 col_name.code(c["fix"])
-                if col_btn.button(f"설치", key=f"fix_{c['name']}"):
+                if col_btn.button("설치", key=f"fix_{c['name']}"):
                     with st.spinner(f"{c['name']} 설치 중..."):
                         r = subprocess.run(c["fix"], shell=True, capture_output=True, text=True, timeout=120)
                     if r.returncode == 0:
@@ -1407,7 +1418,6 @@ if st is not None:
     # --- 작업 관리 탭 (Phase 2a — Producer) ---
     with tab_manage:
         from aic_collector.job_queue import (
-            QueueCounts,
             QueueState,
             TASK_TYPES,
             all_counts,
@@ -2138,7 +2148,6 @@ if st is not None:
     # --- 작업 실행 탭 (Phase 2b — Consumer) ---
     with tab_execute:
         from aic_collector.job_queue import (
-            QueueState as _QS,
             TASK_TYPES as _TT,
             all_counts as _all_counts,
             recover_running_to_pending as _recover,

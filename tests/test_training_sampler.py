@@ -23,12 +23,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-from aic_collector.sampler import (  # noqa: E402
-    SC_TARGET_CYCLE,
-    SFP_TARGET_CYCLE,
-    TrainingSample,
-    sample_training_configs,
-)
+from aic_collector.sampler import sample_training_configs  # noqa: E402
 from aic_collector.build_training_config import (  # noqa: E402
     build_training_config,
     next_config_index,
