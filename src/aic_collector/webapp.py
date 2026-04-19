@@ -53,14 +53,19 @@ if __name__ == "__main__" and "streamlit" not in sys.modules:
 
         _PREFECT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         log_fh = open(_PREFECT_LOG_FILE, "a")
-        # 0.0.0.0 바인딩 — webapp이 LAN으로 노출된 경우(--server.address 0.0.0.0)
-        # Prefect 대시보드 링크도 같은 호스트에서 열려야 하므로 외부 접근 허용.
+        # 0.0.0.0 바인딩 — LAN 접속 허용.
+        # PREFECT_UI_API_URL=/api 를 상대 경로로 주면 UI JS가 브라우저 기준 same-origin
+        # 으로 /api/* 를 호출. 기본값은 http://127.0.0.1:4200/api 라 LAN 접속자의
+        # 브라우저에서 127.0.0.1이 자기 자신을 가리켜 전부 실패 → 상대경로로 해결.
+        env = os.environ.copy()
+        env["PREFECT_SERVER_UI_API_URL"] = "/api"
         p = subprocess.Popen(
             ["uv", "run", "prefect", "server", "start",
              "--host", "0.0.0.0", "--port", "4200"],
             stdout=log_fh, stderr=subprocess.STDOUT,
             cwd=str(Path(__file__).resolve().parent.parent.parent),
             start_new_session=True,
+            env=env,
         )
         _PREFECT_PID_FILE.write_text(str(p.pid))
         print(f"[webapp] Prefect 서버 시작 요청 (pid={p.pid}) — 로그: {_PREFECT_LOG_FILE}")
@@ -164,9 +169,11 @@ def ensure_prefect_server(wait_sec: int = 30) -> bool:
         except (ValueError, ProcessLookupError, PermissionError):
             PREFECT_PID_FILE.unlink(missing_ok=True)
 
-    # 새로 기동 — webapp이 LAN 노출 구성이면 Prefect UI도 외부 접근 필요
+    # 새로 기동 — LAN 노출 + UI JS가 same-origin /api 호출하도록 상대 URL
     PREFECT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(PREFECT_LOG_FILE, "a")
+    env = os.environ.copy()
+    env["PREFECT_UI_API_URL"] = "/api"
     proc = subprocess.Popen(
         [
             "uv", "run", "prefect", "server", "start",
@@ -175,6 +182,7 @@ def ensure_prefect_server(wait_sec: int = 30) -> bool:
         stdout=log_fh, stderr=subprocess.STDOUT,
         cwd=str(PROJECT_DIR),
         start_new_session=True,
+        env=env,
     )
     PREFECT_PID_FILE.write_text(str(proc.pid))
 
