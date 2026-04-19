@@ -857,39 +857,58 @@ def load_run_validations(output_root: Path = OUTPUT_ROOT) -> list[dict]:
 
 
 def load_results(output_root: Path = OUTPUT_ROOT) -> list[dict]:
-    """output_root/run_*/trial_*/tags.json 스캔."""
+    """output_root의 run들에서 tags.json을 읽어 rows 반환.
+
+    두 가지 구조를 모두 지원:
+    - legacy:   run_*/trial_*_score*/tags.json  (Sweep 또는 구 큐)
+    - flat:     run_*/tags.json                  (신 큐 — 1 config = 1 trial)
+    """
     rows = []
     if not output_root.exists():
         return rows
+
+    def _row(tags: dict, run_name: str, run_time: str) -> dict:
+        dur_raw = tags.get("trial_duration_sec")
+        return {
+            "time": run_time,
+            "run": run_name,
+            "trial": tags.get("trial", "?"),
+            "score": round(tags.get("scoring", {}).get("total", 0), 1),
+            "success": "✅" if tags.get("success") else "❌",
+            "duration": round(dur_raw, 1) if dur_raw is not None else None,
+            "policy": tags.get("policy", "?"),
+            "조기종료": "⚡" if tags.get("early_terminated") else "",
+        }
+
     for run_dir in sorted(output_root.glob("run_*")):
         # run 디렉토리명에서 시각 추출.
         #   legacy:    run_01_20260408_233709
-        #   queue:     run_01_20260418_234014_sfp_0000
-        # 앵커 없이 첫 번째 timestamp 블록을 매칭.
+        #   queue(구): run_01_20260418_234014_sfp_0000
+        #   queue(신): run_20260419_120000_sfp_0000
         run_time = ""
         ts_match = re.search(r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", run_dir.name)
         if ts_match:
             y, mo, d, h, mi, s = ts_match.groups()
             run_time = f"{y}-{mo}-{d} {h}:{mi}:{s}"
 
+        # flat 구조 우선 검사
+        flat_tags = run_dir / "tags.json"
+        if flat_tags.exists():
+            try:
+                with open(flat_tags) as f:
+                    rows.append(_row(json.load(f), run_dir.name, run_time))
+            except Exception:
+                pass
+            continue
+
+        # legacy: trial_*_score* 하위
         for trial_dir in sorted(run_dir.glob("trial_*_score*")):
             tags_path = trial_dir / "tags.json"
             if not tags_path.exists():
                 continue
             try:
                 with open(tags_path) as f:
-                    t = json.load(f)
-                dur_raw = t.get("trial_duration_sec")
-                rows.append({
-                    "time": run_time,
-                    "run": run_dir.name,
-                    "trial": t.get("trial", "?"),
-                    "score": round(t.get("scoring", {}).get("total", 0), 1),
-                    "success": "✅" if t.get("success") else "❌",
-                    "duration": round(dur_raw, 1) if dur_raw is not None else None,
-                    "policy": t.get("policy", "?"),
-                    "조기종료": "⚡" if t.get("early_terminated") else "",
-                })
+                    rows.append(_row(json.load(f), run_dir.name, run_time))
             except Exception:
                 continue
     return rows

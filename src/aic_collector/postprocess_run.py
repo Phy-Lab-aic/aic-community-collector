@@ -313,8 +313,14 @@ def process_run(
     policy: str,
     seed: int | None,
     parameters: dict[str, float] | None,
+    flatten: bool = False,
 ) -> int:
     """단일 run의 산출물을 run_dir 아래에 재편한다.
+
+    Args:
+        flatten: True면 trial이 정확히 1개일 때 `trial_<N>_score<NNN>/` 래퍼를
+            생략하고 파일들을 `run_dir` 바로 아래 배치한다. 큐 모드(1 config = 1 trial)
+            에서 사용. 다중 trial이면 무시됨.
 
     Returns:
         0 on success, non-zero on error.
@@ -352,6 +358,14 @@ def process_run(
         sys.stderr.write("[warn] scoring.yaml에 trial_* 키가 없음\n")
         return 0
 
+    # flatten은 trial이 정확히 1개일 때만 적용 (다중 trial 시 래퍼 필요)
+    use_flat = bool(flatten) and len(per_trial) == 1
+    if flatten and not use_flat:
+        sys.stderr.write(
+            f"[warn] flatten=True 요청됐으나 trial이 {len(per_trial)}개 → "
+            f"trial 래퍼 유지\n"
+        )
+
     for trial_key, trial_scoring in per_trial.items():
         m = re.match(r"trial_(\d+)$", trial_key)
         if not m:
@@ -359,11 +373,18 @@ def process_run(
             continue
         trial_num = int(m.group(1))
         score_int = trial_total_score(trial_scoring)
-        trial_dir = run_dir / f"trial_{trial_num}_score{score_int}"
-        trial_dir.mkdir(exist_ok=True)
+
+        if use_flat:
+            trial_dir = run_dir
+            # 평탄 모드: trial의 scoring은 scoring_run.yaml과 충돌 방지로 별도 이름
+            trial_scoring_fn = "trial_scoring.yaml"
+        else:
+            trial_dir = run_dir / f"trial_{trial_num}_score{score_int}"
+            trial_dir.mkdir(exist_ok=True)
+            trial_scoring_fn = "scoring.yaml"
 
         # 2-a. trial scoring
-        with open(trial_dir / "scoring.yaml", "w") as f:
+        with open(trial_dir / trial_scoring_fn, "w") as f:
             yaml.safe_dump(
                 {trial_key: trial_scoring},
                 f,

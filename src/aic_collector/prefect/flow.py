@@ -366,15 +366,30 @@ def _build_run_summary_markdown(
     run_name = Path(run_dir).name
     status = "✅ 성공" if success else "❌ 실패"
 
-    # trial별 점수 스캔
+    # trial별 점수 스캔 — legacy(trial_*_score*) 우선, 없으면 flat(tags.json)
     trial_rows = []
     if success:
-        for trial_dir in sorted(Path(run_dir).glob("trial_*_score*")):
-            m = re.match(r"trial_(\d+)_score(\d+)", trial_dir.name)
-            if m:
-                trial_num = m.group(1)
-                score = m.group(2)
-                trial_rows.append(f"| trial_{trial_num} | {score} |")
+        run_path = Path(run_dir)
+        trial_dirs = sorted(run_path.glob("trial_*_score*"))
+        if trial_dirs:
+            for trial_dir in trial_dirs:
+                m = re.match(r"trial_(\d+)_score(\d+)", trial_dir.name)
+                if m:
+                    trial_num = m.group(1)
+                    score = m.group(2)
+                    trial_rows.append(f"| trial_{trial_num} | {score} |")
+        else:
+            # flat 구조: run_dir/tags.json
+            tags_path = run_path / "tags.json"
+            if tags_path.exists():
+                try:
+                    tags = json.loads(tags_path.read_text())
+                    trial_num = tags.get("trial", "?")
+                    score_val = (tags.get("scoring") or {}).get("total")
+                    score = round(score_val) if isinstance(score_val, (int, float)) else "?"
+                    trial_rows.append(f"| trial_{trial_num} | {score} |")
+                except Exception:
+                    pass
 
     params_rows = "\n".join(
         f"| `{k}` | {v:.4f} |" for k, v in sorted(params.items())
@@ -449,12 +464,23 @@ def _validate_run_dir(run_dir: Path, collect_episode: bool = False) -> dict:
     _check("policy.txt", (run_dir / "policy.txt").exists(), "policy 메타 없음")
     _check("seed.txt", (run_dir / "seed.txt").exists(), "seed 메타 없음")
 
-    # 3. trial 디렉토리
+    # 3. trial 디렉토리 (레거시) 또는 flat 구조
     trial_dirs = sorted(run_dir.glob("trial_*_score*"))
-    _check("trial 디렉토리 ≥ 1개", len(trial_dirs) > 0, "trial 디렉토리 없음")
+    if trial_dirs:
+        _check("trial 디렉토리 ≥ 1개", True, None)
+    else:
+        # flat 구조: tags.json이 run_dir 바로 아래
+        flat_ok = (run_dir / "tags.json").exists()
+        _check(
+            "tags.json (flat) 또는 trial 디렉토리",
+            flat_ok,
+            "trial 디렉토리도 없고 run_dir/tags.json도 없음",
+        )
+        if flat_ok:
+            trial_dirs = [run_dir]  # 이하 로직 재사용
 
     for td in trial_dirs:
-        prefix = td.name
+        prefix = td.name if td != run_dir else "(flat)"
 
         # bag 존재
         bag_dir = td / "bag"
@@ -502,8 +528,9 @@ def _validate_run_dir(run_dir: Path, collect_episode: bool = False) -> dict:
                     f"{prefix}: metadata.json 없음",
                 )
 
-        # scoring/tags
-        _check(f"{prefix}/scoring.yaml", (td / "scoring.yaml").exists(), f"{prefix}: scoring.yaml 없음")
+        # scoring/tags (flat 모드에서는 trial scoring 파일명이 trial_scoring.yaml)
+        scoring_fn = "trial_scoring.yaml" if td == run_dir else "scoring.yaml"
+        _check(f"{prefix}/{scoring_fn}", (td / scoring_fn).exists(), f"{prefix}: {scoring_fn} 없음")
         _check(f"{prefix}/tags.json", (td / "tags.json").exists(), f"{prefix}: tags.json 없음")
 
     passed = sum(1 for c in checks if c["passed"])
@@ -548,6 +575,7 @@ def postprocess_task(
     policy: str,
     seed: int,
     params: dict[str, float],
+    flatten: bool = False,
 ) -> dict:
     """run 산출물 재편."""
     with _task_timer("postprocess"):
@@ -555,7 +583,7 @@ def postprocess_task(
             print(f"[error] {ENGINE_RESULTS} 없음 — 엔진/policy 실행 실패")
             return {"success": False, "run_dir": run_dir}
 
-        print(f"[postprocess] {run_dir} 로 재편...")
+        print(f"[postprocess] {run_dir} 로 재편... (flatten={flatten})")
         params_json_path = Path(f"/tmp/e2e_params_{Path(run_dir).name}.json")
         params_json_path.write_text(json.dumps(params))
 
@@ -567,6 +595,7 @@ def postprocess_task(
             policy=policy,
             seed=seed,
             parameters=params,
+            flatten=flatten,
         )
 
         params_json_path.unlink(missing_ok=True)
@@ -870,7 +899,9 @@ def run_prebuilt_engine_config(
         postprocess 결과 dict (success 포함). validation도 포함될 수 있음.
     """
     output_root = os.path.expanduser(output_root)
-    run_name = f"run_{run_idx:02d}_{run_tag}"
+    # 큐 모드: run_idx는 항상 1이므로 prefix 없이 run_tag만 사용.
+    # run_tag는 consumer_cli에서 "{timestamp}_{task}_{NNNN}" 형식으로 생성됨.
+    run_name = f"run_{run_tag}"
     run_dir = f"{output_root}/{run_name}"
     demo_dir = f"/tmp/e2e_demos_{run_tag}_run{run_idx}"
 
@@ -913,8 +944,11 @@ def run_prebuilt_engine_config(
     finally:
         cleanup_task(engine_handle, republish_pids)
 
-    # 3. 후처리 — sample/seed는 큐 consumer에는 없으므로 0/빈값
-    result = postprocess_task(run_dir, demo_dir, engine_cfg_path, policy_default, 0, {})
+    # 3. 후처리 — sample/seed는 큐 consumer에는 없으므로 0/빈값.
+    # flatten=True로 trial 래퍼 없이 run_dir 바로 아래에 bag/episode/tags.json 배치.
+    result = postprocess_task(
+        run_dir, demo_dir, engine_cfg_path, policy_default, 0, {}, flatten=True
+    )
 
     validation = None
     if result.get("success"):

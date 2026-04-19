@@ -182,17 +182,30 @@ configs/train/
 
 ### 📁 결과 폴더 구조
 
+큐 모드(1 config = 1 trial)는 **평탄 구조**로 저장됩니다:
+
 ```
 ~/aic_community_e2e/
-└── run_01_20260408_234406/
-    ├── config.yaml
-    ├── trial_1_score95/
-    │   ├── bag/          # ROS bag 로그
-    │   ├── episode/      # PNG 이미지 + numpy 배열
-    │   ├── scoring.yaml  # 점수
-    │   └── tags.json     # 씬 정보(메타데이터)
-    ├── trial_2_score95/
-    └── trial_3_score25/
+└── run_20260419_101852_sfp_0006/
+    ├── config.yaml           # 실제 사용된 엔진 config
+    ├── policy.txt            # 사용된 policy
+    ├── seed.txt              # 샘플링 seed
+    ├── scoring_run.yaml      # 엔진 원본 scoring (전체)
+    ├── trial_scoring.yaml    # trial 단독 추출 scoring
+    ├── tags.json             # 태그/메타데이터
+    ├── validation.json       # 구조/크기 검증 결과
+    ├── bag/                  # ROS bag 로그 (mcap + metadata)
+    └── episode/              # collect_episode=ON일 때만 (PNG + npy)
+```
+
+Legacy Sweep 모드(다중 trial)는 여전히 `trial_N_scoreNNN/` 래퍼를 사용합니다:
+
+```
+run_01_20260408_234406/
+├── config.yaml
+├── trial_1_score95/
+├── trial_2_score95/
+└── trial_3_score25/
 ```
 
 ---
