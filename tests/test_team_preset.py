@@ -9,7 +9,14 @@ import pytest
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-from aic_collector.team_preset import PresetError, TeamPreset, load_preset
+from aic_collector.job_queue import QueueState, legacy_dir, queue_dir
+from aic_collector.team_preset import (
+    PresetError,
+    TeamPreset,
+    load_preset,
+    next_start_index_in_slot,
+    slot_range,
+)
 
 
 def _write_preset(path: Path, content: str) -> Path:
@@ -308,3 +315,113 @@ members:
         preset.members.append({"id": "beta", "name": "Beta"})
     with pytest.raises(TypeError):
         preset.members[0]["name"] = "Changed"
+
+
+def test_slot_range_uses_member_position_and_stride() -> None:
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=17,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={},
+        tasks={},
+        members=(
+            {"id": "alpha", "name": "Alpha"},
+            {"id": "beta", "name": "Beta"},
+            {"id": "gamma", "name": "Gamma"},
+        ),
+        preset_hash="sha256:test",
+    )
+
+    assert slot_range(preset, "alpha") == (0, 17)
+    assert slot_range(preset, "beta") == (17, 34)
+    assert slot_range(preset, "gamma") == (34, 51)
+
+
+def test_slot_range_unknown_member_raises_key_error() -> None:
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=17,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={},
+        tasks={},
+        members=({"id": "alpha", "name": "Alpha"},),
+        preset_hash="sha256:test",
+    )
+
+    with pytest.raises(KeyError, match="missing"):
+        slot_range(preset, "missing")
+
+
+def test_next_start_index_in_slot_empty_returns_slot_start(tmp_path: Path) -> None:
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=10,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={},
+        tasks={"sfp": 1},
+        members=(
+            {"id": "alpha", "name": "Alpha"},
+            {"id": "beta", "name": "Beta"},
+        ),
+        preset_hash="sha256:test",
+    )
+
+    assert next_start_index_in_slot(preset, "beta", tmp_path, "sfp") == 10
+
+
+def test_next_start_index_in_slot_advances_with_existing_files(tmp_path: Path) -> None:
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=10,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={},
+        tasks={"sfp": 1},
+        members=(
+            {"id": "alpha", "name": "Alpha"},
+            {"id": "beta", "name": "Beta"},
+        ),
+        preset_hash="sha256:test",
+    )
+
+    pending_dir = queue_dir(tmp_path, "sfp", QueueState.PENDING)
+    done_dir = queue_dir(tmp_path, "sfp", QueueState.DONE)
+    pending_dir.mkdir(parents=True)
+    done_dir.mkdir(parents=True)
+    (pending_dir / "config_sfp_0012.yaml").write_text("x", encoding="utf-8")
+    (done_dir / "config_sfp_0018.yaml").write_text("x", encoding="utf-8")
+
+    assert next_start_index_in_slot(preset, "beta", tmp_path, "sfp") == 19
+
+
+def test_next_start_index_in_slot_ignores_other_slots(tmp_path: Path) -> None:
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=10,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={},
+        tasks={"sfp": 1},
+        members=(
+            {"id": "alpha", "name": "Alpha"},
+            {"id": "beta", "name": "Beta"},
+        ),
+        preset_hash="sha256:test",
+    )
+
+    running_dir = queue_dir(tmp_path, "sfp", QueueState.RUNNING)
+    legacy = legacy_dir(tmp_path, "sfp")
+    running_dir.mkdir(parents=True)
+    legacy.mkdir(parents=True, exist_ok=True)
+    (running_dir / "config_sfp_0009.yaml").write_text("x", encoding="utf-8")
+    (legacy / "config_sfp_0027.yaml").write_text("x", encoding="utf-8")
+
+    assert next_start_index_in_slot(preset, "beta", tmp_path, "sfp") == 10

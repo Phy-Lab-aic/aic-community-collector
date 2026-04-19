@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,8 @@ from types import MappingProxyType
 from typing import Any, Literal
 
 import yaml
+
+from aic_collector.job_queue import QueueState, legacy_dir, queue_dir
 
 
 class PresetError(ValueError):
@@ -30,6 +33,9 @@ class TeamPreset:
     tasks: Mapping[str, int]
     members: tuple[Mapping[str, str], ...]
     preset_hash: str
+
+
+_CONFIG_INDEX_RE_TEMPLATE = r"config_{task_type}_(\d+)\.yaml"
 
 
 def _canonical_hash(data: dict[str, Any]) -> str:
@@ -101,6 +107,49 @@ def _validate_members(value: Any) -> tuple[Mapping[str, str], ...]:
         normalized = {str(k): str(v) for k, v in member.items()}
         members.append(MappingProxyType(normalized))
     return tuple(members)
+
+
+def _member_index(preset: TeamPreset, member_id: str) -> int:
+    for index, member in enumerate(preset.members):
+        if member.get("id") == member_id:
+            return index
+    raise KeyError(member_id)
+
+
+def slot_range(preset: TeamPreset, member_id: str) -> tuple[int, int]:
+    member_index = _member_index(preset, member_id)
+    slot_start = member_index * preset.shard_stride
+    return slot_start, slot_start + preset.shard_stride
+
+
+def next_start_index_in_slot(
+    preset: TeamPreset, member_id: str, queue_root: Path, task_type: str
+) -> int:
+    slot_start, slot_end_exclusive = slot_range(preset, member_id)
+    pattern = re.compile(_CONFIG_INDEX_RE_TEMPLATE.format(task_type=re.escape(task_type)))
+    highest_index: int | None = None
+
+    dirs = [queue_dir(queue_root, task_type, state) for state in QueueState]
+    dirs.append(legacy_dir(queue_root, task_type))
+
+    for directory in dirs:
+        if not directory.exists():
+            continue
+        for path in directory.iterdir():
+            match = pattern.fullmatch(path.name)
+            if match is None:
+                continue
+            config_index = int(match.group(1))
+            if slot_start <= config_index < slot_end_exclusive:
+                highest_index = (
+                    config_index
+                    if highest_index is None
+                    else max(highest_index, config_index)
+                )
+
+    if highest_index is None:
+        return slot_start
+    return highest_index + 1
 
 
 def load_preset(path: Path) -> TeamPreset | None:
