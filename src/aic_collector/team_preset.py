@@ -17,6 +17,8 @@ from typing import Any, Literal
 import yaml
 
 from aic_collector.job_queue import QueueState, legacy_dir, queue_dir
+from aic_collector.job_queue import write_plans
+from aic_collector.sampler import sample_scenes
 
 
 class PresetError(ValueError):
@@ -38,6 +40,13 @@ class TeamPreset:
     tasks: Mapping[str, int]
     members: tuple[Mapping[str, str], ...]
     preset_hash: str
+
+
+@dataclass(frozen=True)
+class SubmitResult:
+    start_index: int
+    written_count: int
+    entry_id: int
 
 
 _CONFIG_INDEX_RE_TEMPLATE = r"config_{task_type}_(\d+)\.yaml"
@@ -203,6 +212,35 @@ def _validate_members(value: Any) -> tuple[Mapping[str, str], ...]:
     return tuple(members)
 
 
+def _thaw(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(k): _thaw(v) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    if isinstance(value, list):
+        return [_thaw(item) for item in value]
+    return value
+
+
+def _training_cfg_from_preset(preset: TeamPreset) -> dict[str, Any]:
+    scene_cfg = _thaw(preset.scene)
+    collection_cfg: dict[str, Any] = {}
+    fixed_target = scene_cfg.pop("fixed_target", None)
+    if fixed_target is not None:
+        collection_cfg["fixed_target"] = _thaw(fixed_target)
+
+    training_cfg: dict[str, Any] = {
+        "training": {
+            "scene": scene_cfg,
+            "ranges": _thaw(preset.ranges),
+            "param_strategy": preset.strategy,
+        }
+    }
+    if collection_cfg:
+        training_cfg["training"]["collection"] = collection_cfg
+    return training_cfg
+
+
 def _member_index(preset: TeamPreset, member_id: str) -> int:
     for index, member in enumerate(preset.members):
         if member.get("id") == member_id:
@@ -299,6 +337,95 @@ def next_start_index_in_slot(
     if next_index >= slot_end_exclusive:
         raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
     return next_index
+
+
+def _count_files_in_range(
+    queue_root: Path,
+    task_type: str,
+    *,
+    start_index: int,
+    count: int,
+) -> int:
+    end_index = start_index + count
+    pattern = re.compile(_CONFIG_INDEX_RE_TEMPLATE.format(task_type=re.escape(task_type)))
+    matched: set[int] = set()
+
+    dirs = [queue_dir(queue_root, task_type, state) for state in QueueState]
+    dirs.append(legacy_dir(queue_root, task_type))
+    for directory in dirs:
+        if not directory.exists():
+            continue
+        for path in directory.iterdir():
+            match = pattern.fullmatch(path.name)
+            if match is None:
+                continue
+            config_index = int(match.group(1))
+            if start_index <= config_index < end_index:
+                matched.add(config_index)
+    return len(matched)
+
+
+def submit_team_claim(
+    preset: TeamPreset,
+    *,
+    member_id: str,
+    task_type: str,
+    queue_root: Path,
+    ledger_path: Path,
+    template_path: Path,
+) -> SubmitResult:
+    requested_count = preset.tasks[task_type]
+    start_index = next_start_index_in_slot(preset, member_id, queue_root, task_type)
+    _, slot_end_exclusive = slot_range(preset, member_id)
+    if start_index + requested_count > slot_end_exclusive:
+        raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
+
+    entry_id = append_claim(
+        ledger_path,
+        member_id=member_id,
+        task_type=task_type,
+        base_seed=preset.base_seed,
+        start_index=start_index,
+        count=requested_count,
+        strategy=preset.strategy,
+        queue_root=queue_root,
+        preset_hash=preset.preset_hash,
+    )
+
+    try:
+        plans = sample_scenes(
+            _training_cfg_from_preset(preset),
+            task_type,
+            requested_count,
+            preset.base_seed,
+            start_index=start_index,
+        )
+    except Exception:
+        rollback_claim(ledger_path, entry_id)
+        raise
+
+    try:
+        written_paths = write_plans(
+            plans,
+            queue_root,
+            template_path,
+            index_width=preset.index_width,
+        )
+    except Exception:
+        actual_count = _count_files_in_range(
+            queue_root,
+            task_type,
+            start_index=start_index,
+            count=requested_count,
+        )
+        adjust_claim_count(ledger_path, entry_id, actual_count)
+        raise
+
+    return SubmitResult(
+        start_index=start_index,
+        written_count=len(written_paths),
+        entry_id=entry_id,
+    )
 
 
 def load_preset(path: Path) -> TeamPreset | None:
