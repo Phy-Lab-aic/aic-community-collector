@@ -291,6 +291,16 @@ def _training_cfg_from_preset(preset: TeamPreset) -> dict[str, Any]:
     return training_cfg
 
 
+def _catalog_allowed_targets(task_type: str) -> set[tuple[int, str]]:
+    if task_type == "sfp":
+        from aic_collector.sampler import SFP_TARGET_CYCLE
+
+        return set(SFP_TARGET_CYCLE)
+    from aic_collector.sampler import SC_TARGET_CYCLE
+
+    return set(SC_TARGET_CYCLE)
+
+
 def _validate_catalog_fixed_target(scene: Mapping[str, Any], task_type: str) -> None:
     fixed_target = scene.get("fixed_target")
     if not isinstance(fixed_target, Mapping):
@@ -312,7 +322,10 @@ def _validate_catalog_fixed_target(scene: Mapping[str, Any], task_type: str) -> 
     port = active_fixed_target["port"]
     if isinstance(rail, bool) or not isinstance(rail, int):
         raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
-    if port is None or isinstance(port, bool):
+    if port is None or isinstance(port, bool) or isinstance(port, (list, tuple, dict, set, frozenset)):
+        raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
+    normalized_port = str(port)
+    if (int(rail), normalized_port) not in _catalog_allowed_targets(task_type):
         raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
 
     for other_task_type in allowed_task_types - {task_type}:
