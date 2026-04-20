@@ -21,6 +21,7 @@ from aic_collector.webapp import (  # noqa: E402
     build_team_mode_state,
     build_team_preview_scene_config,
     build_validated_preset_ranges,
+    build_team_campaign_summary,
     render_scene_svg,
     build_team_slot_summary,
     build_team_submit_preset,
@@ -115,7 +116,7 @@ def test_build_team_mode_state_stays_aligned_with_submit_when_stale_ledger_claim
         ledger_path=ledger_path,
         member_id="m0",
     )
-    submit_preset = build_team_submit_preset(preset, sfp_count=state["selected_sfp_count"])
+    submit_preset = build_team_submit_preset(preset, count=state["selected_sfp_count"])
     result = submit_team_claim(
         submit_preset,
         member_id="m0",
@@ -159,7 +160,7 @@ def test_build_team_mode_state_marks_slot_exhaustion_and_zeroes_counts(tmp_path:
 def test_build_team_submit_preset_overrides_runtime_sfp_count_only() -> None:
     preset = _preset(tasks={"sfp_default_count": 8, "sc_default_count": 0})
 
-    submit_preset = build_team_submit_preset(preset, sfp_count=5)
+    submit_preset = build_team_submit_preset(preset, count=5)
 
     assert submit_preset.tasks["sfp"] == 5
     assert submit_preset.tasks["sfp_default_count"] == 8
@@ -182,7 +183,7 @@ def test_build_team_submit_preset_rejects_nonzero_sc_default_count() -> None:
     preset = _preset(tasks={"sfp_default_count": 8, "sc_default_count": 1})
 
     with pytest.raises(PresetError, match="tasks.sc_default_count"):
-        build_team_submit_preset(preset, sfp_count=5)
+        build_team_submit_preset(preset, count=5)
 
 
 def test_build_team_preview_scene_config_threads_fixed_target_into_collection() -> None:
@@ -510,3 +511,131 @@ def test_build_team_mode_state_rejects_missing_sfp_default_key(tmp_path: Path) -
             queue_root=tmp_path / "queue",
             member_id="m0",
         )
+
+
+def test_build_team_mode_state_uses_batch_default_and_campaign_remaining(tmp_path: Path) -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=100000,
+        index_width=6,
+        strategy="uniform",
+        ranges=_preset().ranges,
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+            "fixed_target": {"sfp": {"rail": 0, "port": "sfp_port_0"}, "sc": None},
+        },
+        tasks={"sfp_default_count": 0},
+        members=_preset().members,
+        preset_hash="sha256:trial_1",
+        preset_name="trial_1",
+        preset_path=tmp_path / "trial_1.yaml",
+        trial_id="trial_1",
+        task_type="sfp",
+        total_target_count=1000,
+        batch_default_count=100,
+        is_catalog_preset=True,
+    )
+    ledger = tmp_path / "seed_ledger.yaml"
+    ledger.write_text(
+        """entries:
+  - member_id: m0
+    task_type: sfp
+    trial_id: trial_1
+    preset_name: trial_1
+    base_seed: 42
+    start_index: 0
+    count: 940
+    strategy: uniform
+    queue_root: queue
+    preset_hash: sha256:trial_1
+    git_sha: abc
+    created_at: 2026-04-20T00:00:00Z
+""",
+        encoding="utf-8",
+    )
+
+    state = build_team_mode_state(
+        preset,
+        queue_root=tmp_path / "queue",
+        ledger_path=ledger,
+        member_id="m0",
+    )
+
+    assert state["task_type"] == "sfp"
+    assert state["default_count"] == 60
+    assert state["selected_count"] == 60
+    assert state["campaign_claimed"] == 940
+    assert state["campaign_remaining"] == 60
+    assert state["campaign_complete"] is False
+
+
+def test_build_team_mode_state_supports_sc_catalog_preset(tmp_path: Path) -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=100000,
+        index_width=6,
+        strategy="uniform",
+        ranges=_preset().ranges,
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+            "fixed_target": {"sfp": None, "sc": {"rail": 1, "port": "sc_port_1"}},
+        },
+        tasks={"sc_default_count": 0},
+        members=_preset().members,
+        preset_hash="sha256:trial_3",
+        preset_name="trial_3",
+        preset_path=tmp_path / "trial_3.yaml",
+        trial_id="trial_3",
+        task_type="sc",
+        total_target_count=1000,
+        batch_default_count=100,
+        is_catalog_preset=True,
+    )
+
+    state = build_team_mode_state(
+        preset,
+        queue_root=tmp_path / "queue",
+        ledger_path=tmp_path / "seed_ledger.yaml",
+        member_id="m0",
+    )
+
+    assert state["task_type"] == "sc"
+    assert state["preview_filename"] == "config_sc_000000.yaml"
+    assert state["default_count"] == 100
+
+
+def test_build_team_campaign_summary_formats_progress() -> None:
+    summary = build_team_campaign_summary(
+        TeamPreset(
+            base_seed=42,
+            shard_stride=100000,
+            index_width=6,
+            strategy="uniform",
+            ranges={},
+            scene={},
+            tasks={},
+            members=(),
+            preset_hash="sha256:trial_2",
+            preset_name="trial_2",
+            preset_path=Path("trial_2.yaml"),
+            trial_id="trial_2",
+            task_type="sfp",
+            total_target_count=1000,
+            batch_default_count=100,
+            is_catalog_preset=True,
+        ),
+        {
+            "campaign_claimed": 600,
+            "campaign_remaining": 400,
+            "campaign_complete": False,
+        },
+    )
+
+    assert summary == {
+        "caption": "캠페인: trial_2 · SFP · 목표 1000 · 예약/생성 600 · 남은 목표 400",
+        "campaign_complete_info": "",
+    }

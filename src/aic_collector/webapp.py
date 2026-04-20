@@ -104,6 +104,7 @@ from aic_collector.team_preset import (  # noqa: E402
     PresetError,
     SlotExhausted,
     TeamPreset,
+    claimed_count_for_preset,
     load_preset,
     next_start_index_in_slot,
     slot_range,
@@ -1227,6 +1228,14 @@ def build_team_preview_scene_config(preset: TeamPreset) -> dict[str, Any]:
     return preview_cfg
 
 
+def _active_team_task_type(preset: TeamPreset) -> str:
+    if preset.is_catalog_preset and preset.task_type is not None:
+        return preset.task_type
+    if _preset_task_count(preset, "sc_default_count") != 0:
+        raise PresetError("Unsupported team preset task count: tasks.sc_default_count must be 0")
+    return "sfp"
+
+
 def _require_sfp_only_team_mode_tasks(preset: TeamPreset) -> int:
     default_sfp_count = _preset_task_count(preset, "sfp_default_count")
     if _preset_task_count(preset, "sc_default_count") != 0:
@@ -1242,6 +1251,7 @@ def build_team_mode_state(
     member_id: str,
     requested_sfp_count: int | None = None,
 ) -> dict[str, Any]:
+    task_type = _active_team_task_type(preset)
     slot_start, slot_end_exclusive = slot_range(preset, member_id)
     slot_capacity = slot_end_exclusive - slot_start
 
@@ -1250,12 +1260,12 @@ def build_team_mode_state(
             preset,
             member_id,
             queue_root,
-            "sfp",
+            task_type,
             ledger_path=ledger_path,
         )
         used_slots = next_start_index - slot_start
         remaining_slots = slot_end_exclusive - next_start_index
-        preview_filename = f"config_sfp_{next_start_index:0{preset.index_width}d}.yaml"
+        preview_filename = f"config_{task_type}_{next_start_index:0{preset.index_width}d}.yaml"
         slot_exhausted = False
     except SlotExhausted:
         next_start_index = None
@@ -1264,13 +1274,31 @@ def build_team_mode_state(
         preview_filename = None
         slot_exhausted = True
 
-    default_sfp_count = min(_require_sfp_only_team_mode_tasks(preset), remaining_slots)
-    requested_value = default_sfp_count if requested_sfp_count is None else int(requested_sfp_count)
-    if requested_value < 0:
-        raise PresetError("SFP count cannot be negative in team mode")
-    selected_sfp_count = min(requested_value, remaining_slots)
+    if preset.is_catalog_preset:
+        campaign_claimed = (
+            claimed_count_for_preset(ledger_path, preset.preset_hash)
+            if ledger_path is not None
+            else 0
+        )
+        campaign_remaining = max(int(preset.total_target_count or 0) - campaign_claimed, 0)
+        default_count = min(int(preset.batch_default_count or 0), remaining_slots, campaign_remaining)
+        requested_value = default_count if requested_sfp_count is None else int(requested_sfp_count)
+        if requested_value < 0:
+            raise PresetError("SFP count cannot be negative in team mode")
+        selected_count = min(requested_value, remaining_slots, campaign_remaining)
+        campaign_complete = campaign_remaining == 0
+    else:
+        default_count = min(_require_sfp_only_team_mode_tasks(preset), remaining_slots)
+        requested_value = default_count if requested_sfp_count is None else int(requested_sfp_count)
+        if requested_value < 0:
+            raise PresetError("SFP count cannot be negative in team mode")
+        selected_count = min(requested_value, remaining_slots)
+        campaign_claimed = 0
+        campaign_remaining = 0
+        campaign_complete = False
 
     return {
+        "task_type": task_type,
         "slot_start": slot_start,
         "slot_end_exclusive": slot_end_exclusive,
         "used_slots": used_slots,
@@ -1278,19 +1306,50 @@ def build_team_mode_state(
         "next_start_index": next_start_index,
         "preview_filename": preview_filename,
         "slot_exhausted": slot_exhausted,
-        "default_sfp_count": default_sfp_count,
-        "selected_sfp_count": selected_sfp_count,
+        "default_count": default_count,
+        "selected_count": selected_count,
+        "campaign_claimed": campaign_claimed,
+        "campaign_remaining": campaign_remaining,
+        "campaign_complete": campaign_complete,
+        "default_sfp_count": default_count,
+        "selected_sfp_count": selected_count,
     }
 
 
-def build_team_submit_preset(preset: TeamPreset, *, sfp_count: int) -> TeamPreset:
-    _require_sfp_only_team_mode_tasks(preset)
-    if sfp_count < 0:
+def build_team_submit_preset(preset: TeamPreset, *, count: int) -> TeamPreset:
+    task_type = _active_team_task_type(preset)
+    if count < 0:
         raise PresetError("SFP count cannot be negative in team mode")
 
     tasks = dict(preset.tasks)
-    tasks["sfp"] = int(sfp_count)
+    tasks[task_type] = int(count)
+    if task_type == "sfp":
+        tasks["sc"] = 0
+    else:
+        tasks["sfp"] = 0
     return replace(preset, tasks=tasks)
+
+
+def build_team_campaign_summary(
+    preset: TeamPreset | None,
+    team_state: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    if preset is None or team_state is None or not preset.is_catalog_preset:
+        return None
+
+    task_label = str(preset.task_type or "").upper()
+    return {
+        "caption": (
+            f"캠페인: {preset.trial_id} · {task_label} · 목표 {int(preset.total_target_count or 0)}"
+            f" · 예약/생성 {int(team_state['campaign_claimed'])}"
+            f" · 남은 목표 {int(team_state['campaign_remaining'])}"
+        ),
+        "campaign_complete_info": (
+            f"{preset.preset_name} 캠페인 목표를 모두 채웠습니다."
+            if team_state.get("campaign_complete")
+            else ""
+        ),
+    }
 
 
 def build_team_slot_summary(
@@ -1612,6 +1671,10 @@ if st is not None:
             team_state if team_widgets_locked else None,
             mgr_team_member_id if team_widgets_locked else None,
         )
+        team_campaign_summary = build_team_campaign_summary(
+            team_preset if team_widgets_locked else None,
+            team_state if team_widgets_locked else None,
+        )
         if team_widgets_locked and mgr_team_member_id is not None and team_state is not None:
             mgr_team_member_id = st.selectbox(
                 "Member",
@@ -1626,27 +1689,32 @@ if st is not None:
             st.caption(team_slot_summary["caption"])
             if team_slot_summary["slot_exhausted_error"]:
                 st.error(team_slot_summary["slot_exhausted_error"])
-    
+        if team_campaign_summary is not None:
+            st.caption(team_campaign_summary["caption"])
+            if team_campaign_summary["campaign_complete_info"]:
+                st.success(team_campaign_summary["campaign_complete_info"])
+
         # 기본 파라미터
         col_sfp, col_sc = st.columns(2)
         with col_sfp:
+            team_active_task_type = str(team_state["task_type"]) if team_widgets_locked and team_state is not None else "sfp"
             mgr_sfp_count = st.number_input(
-                "SFP configs",
+                f"{team_active_task_type.upper()} configs" if team_widgets_locked else "SFP configs",
                 min_value=0,
-            max_value=int(team_state["remaining_slots"]) if team_widgets_locked and team_state is not None else 10000,
-            value=int(team_state["selected_sfp_count"]) if team_widgets_locked and team_state is not None else 20,
-            step=1 if team_widgets_locked else 10,
-            key="mgr_sfp_count",
-            disabled=bool(
-                team_widgets_locked
-                and team_state is not None
-                and int(team_state["remaining_slots"]) == 0
-            ),
-            help=(
-                "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
-                "균등 순환. 10의 배수 권장.  \n"
-                f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
-            ),
+                max_value=int(team_state["remaining_slots"]) if team_widgets_locked and team_state is not None else 10000,
+                value=int(team_state["selected_count"]) if team_widgets_locked and team_state is not None else 20,
+                step=1 if team_widgets_locked else 10,
+                key="mgr_sfp_count",
+                disabled=bool(
+                    team_widgets_locked
+                    and team_state is not None
+                    and int(team_state["remaining_slots"]) == 0
+                ),
+                help=(
+                    "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
+                    "균등 순환. 10의 배수 권장.  \n"
+                    f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
+                ),
             )
         with col_sc:
             mgr_sc_count = st.number_input(
@@ -1932,12 +2000,12 @@ if st is not None:
                 try:
                     submit_preset = build_team_submit_preset(
                         team_preset,
-                        sfp_count=int(mgr_sfp_count),
+                        count=int(mgr_sfp_count),
                     )
                     result = submit_team_claim(
                         submit_preset,
                         member_id=mgr_team_member_id,
-                        task_type="sfp",
+                        task_type=str(team_state["task_type"]),
                         queue_root=mgr_queue_root,
                         ledger_path=LEDGER_PATH,
                         template_path=template,
