@@ -10,7 +10,13 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from aic_collector.job_queue import QueueState, queue_dir  # noqa: E402
-from aic_collector.team_preset import PresetError, TeamPreset, append_claim, submit_team_claim  # noqa: E402
+from aic_collector.team_preset import (  # noqa: E402
+    PresetError,
+    TeamPreset,
+    append_claim,
+    load_preset,
+    submit_team_claim,
+)
 from aic_collector.webapp import (  # noqa: E402
     build_team_mode_state,
     build_team_preview_scene_config,
@@ -217,6 +223,53 @@ def test_build_team_preview_scene_config_threads_fixed_target_into_collection() 
             "gripper_z": 0.002,
             "gripper_rpy": 0.04,
         },
+    }
+
+
+def test_build_team_preview_scene_config_accepts_fixed_target_from_loaded_preset(
+    tmp_path: Path,
+) -> None:
+    preset_path = tmp_path / "preset.yaml"
+    preset_path.write_text(
+        """
+team:
+  base_seed: 42
+  shard_stride: 10
+  index_width: 5
+sampling:
+  strategy: uniform
+  ranges:
+    nic_translation: [-0.0215, 0.0234]
+    nic_yaw: [-0.1745, 0.1745]
+    sc_translation: [-0.06, 0.055]
+    gripper_xy: 0.002
+    gripper_z: 0.002
+    gripper_rpy: 0.04
+scene:
+  nic_count_range: [1, 1]
+  sc_count_range: [1, 1]
+  target_cycling: false
+  fixed_target:
+    sfp: {rail: 0, port: "sfp_port_0"}
+    sc: null
+tasks:
+  sfp_default_count: 1
+  sc_default_count: 0
+members:
+  - id: m0
+    name: Member 0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    preset = load_preset(preset_path)
+
+    assert preset is not None
+    assert build_team_preview_scene_config(preset)["collection"] == {
+        "fixed_target": {
+            "sfp": {"rail": 0, "port": "sfp_port_0"},
+            "sc": None,
+        }
     }
 
 

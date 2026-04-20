@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -1134,7 +1135,7 @@ def _validated_fixed_target_map(preset: TeamPreset) -> dict[str, dict[str, Any] 
     fixed_target = preset.scene.get("fixed_target")
     if fixed_target is None:
         return None
-    if not isinstance(fixed_target, dict):
+    if not isinstance(fixed_target, Mapping):
         raise PresetError("Invalid preset fixed_target: scene.fixed_target")
 
     allowed_targets = {
@@ -1150,7 +1151,7 @@ def _validated_fixed_target_map(preset: TeamPreset) -> dict[str, dict[str, Any] 
         if payload is None:
             validated[task_name] = None
             continue
-        if not isinstance(payload, dict):
+        if not isinstance(payload, Mapping):
             raise PresetError(f"Invalid preset fixed_target: {field_path}")
         if "rail" not in payload or "port" not in payload:
             raise PresetError(f"Invalid preset fixed_target: {field_path}")
