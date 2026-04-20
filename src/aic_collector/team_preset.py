@@ -310,10 +310,11 @@ def _validate_catalog_fixed_target(scene: Mapping[str, Any], task_type: str) -> 
     for key in fixed_target:
         if str(key) not in allowed_task_types:
             raise PresetError(f"Invalid campaign field: scene.fixed_target.{key}")
+    for expected_task_type in allowed_task_types:
+        if expected_task_type not in fixed_target:
+            raise PresetError(f"Invalid campaign field: scene.fixed_target.{expected_task_type}")
 
-    active_fixed_target = fixed_target.get(task_type)
-    if active_fixed_target is None:
-        raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
+    active_fixed_target = fixed_target[task_type]
     if not isinstance(active_fixed_target, Mapping):
         raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
     if "rail" not in active_fixed_target or "port" not in active_fixed_target:
@@ -329,7 +330,7 @@ def _validate_catalog_fixed_target(scene: Mapping[str, Any], task_type: str) -> 
         raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
 
     for other_task_type in allowed_task_types - {task_type}:
-        inactive_fixed_target = fixed_target.get(other_task_type)
+        inactive_fixed_target = fixed_target[other_task_type]
         if inactive_fixed_target is not None:
             raise PresetError(f"Invalid campaign field: scene.fixed_target.{other_task_type}")
 
