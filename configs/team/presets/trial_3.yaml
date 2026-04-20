@@ -1,0 +1,41 @@
+version: 1
+team:
+  base_seed: 42
+  shard_stride: 100000
+  index_width: 6
+sampling:
+  strategy: uniform
+  ranges:
+    nic_translation: [-0.0215, 0.0234]
+    nic_yaw: [-0.1745, 0.1745]
+    sc_translation: [-0.06, 0.055]
+    gripper_xy: 0.002
+    gripper_z: 0.002
+    gripper_rpy: 0.04
+scene:
+  nic_count_range: [1, 1]
+  sc_count_range: [1, 1]
+  target_cycling: false
+  fixed_target:
+    sfp: null
+    sc:
+      rail: 1
+      port: sc_port_1
+campaign:
+  trial_id: trial_3
+  task_type: sc
+  total_target_count: 1000
+  batch_default_count: 100
+members:
+  - id: M0
+    name: alice
+  - id: M1
+    name: bob
+  - id: M2
+    name: carol
+  - id: M3
+    name: dave
+  - id: M4
+    name: eve
+  - id: M5
+    name: frank
