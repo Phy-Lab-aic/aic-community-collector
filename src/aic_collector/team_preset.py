@@ -451,6 +451,20 @@ def _adjust_claim_count_locked(
     entries[entry_id]["count"] = actual_count
 
 
+def _claimed_count_for_preset_entries(
+    entries: list[dict[str, Any]], preset_hash: str
+) -> int:
+    claimed = 0
+    for entry in entries:
+        if entry.get("preset_hash") != preset_hash:
+            continue
+        count = entry.get("count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            continue
+        claimed += count
+    return claimed
+
+
 def append_claim(
     ledger_path: Path,
     *,
@@ -485,16 +499,7 @@ def append_claim(
 
 
 def claimed_count_for_preset(ledger_path: Path, preset_hash: str) -> int:
-    entries = _ledger_entries(ledger_path)
-    claimed = 0
-    for entry in entries:
-        if entry.get("preset_hash") != preset_hash:
-            continue
-        count = entry.get("count")
-        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
-            continue
-        claimed += count
-    return claimed
+    return _claimed_count_for_preset_entries(_ledger_entries(ledger_path), preset_hash)
 
 
 def rollback_claim(ledger_path: Path, entry_id: int) -> None:
@@ -673,18 +678,16 @@ def submit_team_claim(
     ledger_path: Path,
     template_path: Path,
 ) -> SubmitResult:
+    if preset.is_catalog_preset and preset.task_type != task_type:
+        raise PresetError(
+            f"Catalog preset task_type mismatch: expected {preset.task_type}, got {task_type}"
+        )
+
     requested_count = preset.tasks[task_type]
     with _ledger_lock(ledger_path):
         entries = _ledger_entries(ledger_path)
         if preset.is_catalog_preset and preset.total_target_count is not None:
-            claimed = 0
-            for entry in entries:
-                if entry.get("preset_hash") != preset.preset_hash:
-                    continue
-                count = entry.get("count")
-                if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
-                    continue
-                claimed += count
+            claimed = _claimed_count_for_preset_entries(entries, preset.preset_hash)
             remaining_campaign = preset.total_target_count - claimed
             if remaining_campaign <= 0:
                 raise SlotExhausted(

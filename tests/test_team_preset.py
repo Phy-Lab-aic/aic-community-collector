@@ -17,6 +17,7 @@ from aic_collector.team_preset import (  # noqa: E402
     PresetError,
     SlotExhausted,
     TeamPreset,
+    SubmitResult,
     adjust_claim_count,
     append_claim,
     claimed_count_for_preset,
@@ -1158,6 +1159,210 @@ def test_submit_team_claim_rejects_request_beyond_campaign_remaining(tmp_path: P
             ledger_path=ledger_path,
             template_path=template_path,
         )
+
+
+def test_submit_team_claim_rejects_catalog_task_type_mismatch(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    ledger_path.write_text("entries: []\n", encoding="utf-8")
+    queue_root = tmp_path / "queue"
+    template_path = tmp_path / "template.yaml"
+    template_path.write_text("template: {}\n", encoding="utf-8")
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=17,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={
+            "env": "training",
+            "fixed_target": {
+                "sfp": {"rail": 1, "port": "sfp_port_0"},
+                "sc": None,
+            },
+        },
+        tasks={"sfp": 50},
+        members=(
+            {"id": "alpha", "name": "Alpha"},
+        ),
+        preset_hash="sha256:trial1",
+        preset_name="trial_1",
+        trial_id="trial_1",
+        task_type="sfp",
+        total_target_count=100,
+        batch_default_count=50,
+        is_catalog_preset=True,
+    )
+
+    with pytest.raises(PresetError, match="mismatch"):
+        submit_team_claim(
+            preset,
+            member_id="alpha",
+            task_type="sc",
+            queue_root=queue_root,
+            ledger_path=ledger_path,
+            template_path=template_path,
+        )
+
+
+def test_submit_team_claim_success_writes_catalog_metadata_to_ledger(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    queue_root = tmp_path / "queue"
+    template_path = tmp_path / "template.yaml"
+    template_path.write_text(
+        """
+scoring: {}
+task_board_limits: {}
+robot: {}
+""".strip(),
+        encoding="utf-8",
+    )
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=100,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={
+            "env": "training",
+            "fixed_target": {
+                "sfp": {"rail": 1, "port": "sfp_port_0"},
+                "sc": None,
+            },
+        },
+        tasks={"sfp": 50},
+        members=(
+            {"id": "alpha", "name": "Alpha"},
+        ),
+        preset_hash="sha256:trial1",
+        preset_name="trial_1",
+        trial_id="trial_1",
+        task_type="sfp",
+        total_target_count=100,
+        batch_default_count=50,
+        is_catalog_preset=True,
+    )
+
+    result = submit_team_claim(
+        preset,
+        member_id="alpha",
+        task_type="sfp",
+        queue_root=queue_root,
+        ledger_path=ledger_path,
+        template_path=template_path,
+    )
+
+    ledger = _load_ledger(ledger_path)
+
+    assert result.start_index == 0
+    assert result.written_count == 50
+    assert ledger["entries"] == [
+        {
+            "member_id": "alpha",
+            "task_type": "sfp",
+            "base_seed": 100,
+            "start_index": 0,
+            "count": 50,
+            "strategy": "uniform",
+            "queue_root": str(queue_root),
+            "preset_hash": "sha256:trial1",
+            "trial_id": "trial_1",
+            "preset_name": "trial_1",
+            "git_sha": ANY,
+            "created_at": ANY,
+        }
+    ]
+
+
+def test_concurrent_submit_team_claims_race_for_last_campaign_batch(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    queue_root = tmp_path / "queue"
+    template_path = tmp_path / "template.yaml"
+    template_path.write_text(
+        """
+scoring: {}
+task_board_limits: {}
+robot: {}
+""".strip(),
+        encoding="utf-8",
+    )
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=100,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={
+            "env": "training",
+            "fixed_target": {
+                "sfp": {"rail": 1, "port": "sfp_port_0"},
+                "sc": None,
+            },
+        },
+        tasks={"sfp": 50},
+        members=(
+            {"id": "alpha", "name": "Alpha"},
+        ),
+        preset_hash="sha256:trial1",
+        preset_name="trial_1",
+        trial_id="trial_1",
+        task_type="sfp",
+        total_target_count=100,
+        batch_default_count=50,
+        is_catalog_preset=True,
+    )
+    append_claim(
+        ledger_path,
+        member_id="alpha",
+        task_type="sfp",
+        base_seed=100,
+        start_index=0,
+        count=50,
+        strategy="uniform",
+        queue_root=queue_root,
+        preset_hash="sha256:trial1",
+        trial_id="trial_1",
+        preset_name="trial_1",
+    )
+
+    barrier = threading.Barrier(2)
+    results: list[tuple[str, object]] = []
+    lock = threading.Lock()
+
+    def submit(name: str) -> None:
+        barrier.wait()
+        try:
+            result = submit_team_claim(
+                preset,
+                member_id="alpha",
+                task_type="sfp",
+                queue_root=queue_root,
+                ledger_path=ledger_path,
+                template_path=template_path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            with lock:
+                results.append((name, exc))
+        else:
+            with lock:
+                results.append((name, result))
+
+    threads = [threading.Thread(target=submit, args=(f"worker-{index}",)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    successes = [result for _, result in results if isinstance(result, SubmitResult)]
+    failures = [result for _, result in results if isinstance(result, Exception)]
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], SlotExhausted)
+    assert "campaign" in str(failures[0])
 
 
 def test_rollback_claim_removes_only_the_last_entry(tmp_path: Path) -> None:
