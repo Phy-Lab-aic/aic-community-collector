@@ -414,22 +414,27 @@ def _append_claim_locked(
     strategy: str,
     queue_root: Path,
     preset_hash: str,
+    trial_id: str | None = None,
+    preset_name: str | None = None,
 ) -> int:
     entry_id = len(entries)
-    entries.append(
-        {
-            "member_id": member_id,
-            "task_type": task_type,
-            "base_seed": base_seed,
-            "start_index": start_index,
-            "count": count,
-            "strategy": strategy,
-            "queue_root": str(queue_root),
-            "preset_hash": preset_hash,
-            "git_sha": _git_sha(),
-            "created_at": _iso_utc_now(),
-        }
-    )
+    entry = {
+        "member_id": member_id,
+        "task_type": task_type,
+        "base_seed": base_seed,
+        "start_index": start_index,
+        "count": count,
+        "strategy": strategy,
+        "queue_root": str(queue_root),
+        "preset_hash": preset_hash,
+        "git_sha": _git_sha(),
+        "created_at": _iso_utc_now(),
+    }
+    if trial_id is not None:
+        entry["trial_id"] = trial_id
+    if preset_name is not None and preset_name != "":
+        entry["preset_name"] = preset_name
+    entries.append(entry)
     return entry_id
 
 
@@ -457,6 +462,8 @@ def append_claim(
     strategy: str,
     queue_root: Path,
     preset_hash: str,
+    trial_id: str | None = None,
+    preset_name: str | None = None,
 ) -> int:
     with _ledger_lock(ledger_path):
         entries = _ledger_entries(ledger_path)
@@ -470,9 +477,24 @@ def append_claim(
             strategy=strategy,
             queue_root=queue_root,
             preset_hash=preset_hash,
+            trial_id=trial_id,
+            preset_name=preset_name,
         )
         _write_ledger_entries(ledger_path, entries)
         return entry_id
+
+
+def claimed_count_for_preset(ledger_path: Path, preset_hash: str) -> int:
+    entries = _ledger_entries(ledger_path)
+    claimed = 0
+    for entry in entries:
+        if entry.get("preset_hash") != preset_hash:
+            continue
+        count = entry.get("count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            continue
+        claimed += count
+    return claimed
 
 
 def rollback_claim(ledger_path: Path, entry_id: int) -> None:
@@ -654,6 +676,24 @@ def submit_team_claim(
     requested_count = preset.tasks[task_type]
     with _ledger_lock(ledger_path):
         entries = _ledger_entries(ledger_path)
+        if preset.is_catalog_preset and preset.total_target_count is not None:
+            claimed = 0
+            for entry in entries:
+                if entry.get("preset_hash") != preset.preset_hash:
+                    continue
+                count = entry.get("count")
+                if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+                    continue
+                claimed += count
+            remaining_campaign = preset.total_target_count - claimed
+            if remaining_campaign <= 0:
+                raise SlotExhausted(
+                    f"No remaining campaign capacity for preset: {preset.preset_name}"
+                )
+            if requested_count > remaining_campaign:
+                raise SlotExhausted(
+                    f"Requested count exceeds remaining campaign capacity for preset: {preset.preset_name}"
+                )
         start_index = next_start_index_in_slot(
             preset,
             member_id,
@@ -675,6 +715,8 @@ def submit_team_claim(
             strategy=preset.strategy,
             queue_root=queue_root,
             preset_hash=preset.preset_hash,
+            trial_id=preset.trial_id,
+            preset_name=preset.preset_name,
         )
         _write_ledger_entries(ledger_path, entries)
 

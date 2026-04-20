@@ -19,11 +19,13 @@ from aic_collector.team_preset import (  # noqa: E402
     TeamPreset,
     adjust_claim_count,
     append_claim,
+    claimed_count_for_preset,
     load_presets,
     load_preset,
     next_start_index_in_slot,
     rollback_claim,
     slot_range,
+    submit_team_claim,
 )
 
 
@@ -1065,6 +1067,97 @@ def test_second_append_gets_next_id_and_preserves_existing_entries(tmp_path: Pat
     assert second_id == 1
     assert [entry["member_id"] for entry in ledger["entries"]] == ["alpha", "beta"]
     assert [entry["start_index"] for entry in ledger["entries"]] == [0, 10]
+
+
+def test_claimed_count_for_preset_hash_sums_only_matching_entries(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    ledger_path.write_text("entries: []\n", encoding="utf-8")
+
+    append_claim(
+        ledger_path,
+        member_id="alpha",
+        task_type="sfp",
+        base_seed=100,
+        start_index=0,
+        count=100,
+        strategy="uniform",
+        queue_root=tmp_path / "queue-a",
+        preset_hash="sha256:a",
+        trial_id="trial_1",
+        preset_name="trial_1",
+    )
+    append_claim(
+        ledger_path,
+        member_id="beta",
+        task_type="sc",
+        base_seed=200,
+        start_index=100,
+        count=50,
+        strategy="lhs",
+        queue_root=tmp_path / "queue-b",
+        preset_hash="sha256:b",
+        trial_id="trial_2",
+        preset_name="trial_2",
+    )
+
+    assert claimed_count_for_preset(ledger_path, "sha256:a") == 100
+    assert claimed_count_for_preset(ledger_path, "sha256:b") == 50
+
+
+def test_submit_team_claim_rejects_request_beyond_campaign_remaining(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    ledger_path.write_text("entries: []\n", encoding="utf-8")
+    queue_root = tmp_path / "queue"
+    template_path = tmp_path / "template.yaml"
+    template_path.write_text("template: {}\n", encoding="utf-8")
+    preset = TeamPreset(
+        base_seed=100,
+        shard_stride=17,
+        index_width=4,
+        strategy="uniform",
+        ranges={},
+        scene={
+            "env": "training",
+            "fixed_target": {
+                "sfp": {"rail": 1, "port": "sfp_port_0"},
+                "sc": None,
+            },
+        },
+        tasks={"sfp": 100},
+        members=(
+            {"id": "alpha", "name": "Alpha"},
+        ),
+        preset_hash="sha256:trial1",
+        preset_name="trial_1",
+        trial_id="trial_1",
+        task_type="sfp",
+        total_target_count=120,
+        batch_default_count=100,
+        is_catalog_preset=True,
+    )
+    append_claim(
+        ledger_path,
+        member_id="alpha",
+        task_type="sfp",
+        base_seed=100,
+        start_index=0,
+        count=50,
+        strategy="uniform",
+        queue_root=queue_root,
+        preset_hash="sha256:trial1",
+        trial_id="trial_1",
+        preset_name="trial_1",
+    )
+
+    with pytest.raises(SlotExhausted, match="campaign"):
+        submit_team_claim(
+            preset,
+            member_id="alpha",
+            task_type="sfp",
+            queue_root=queue_root,
+            ledger_path=ledger_path,
+            template_path=template_path,
+        )
 
 
 def test_rollback_claim_removes_only_the_last_entry(tmp_path: Path) -> None:
