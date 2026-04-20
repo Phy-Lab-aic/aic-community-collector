@@ -250,6 +250,89 @@ members:
     assert message_fragment in issues[0].message
 
 
+def test_load_presets_rejects_malformed_inactive_fixed_target_branch(tmp_path: Path) -> None:
+    preset_dir = tmp_path / "presets"
+    preset_dir.mkdir()
+    _write_preset(
+        preset_dir / "bad.yaml",
+        """
+version: 1
+campaign:
+  trial_id: trial_2
+  task_type: sfp
+  total_target_count: 1000
+  batch_default_count: 100
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {}
+scene:
+  env: training
+  fixed_target:
+    sfp:
+      rail: 1
+      port: sfp_port_0
+    sc: "bad"
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+    )
+
+    presets, issues = load_presets(preset_dir)
+
+    assert presets == ()
+    assert len(issues) == 1
+    assert issues[0].path.name == "bad.yaml"
+    assert "scene.fixed_target.sc" in issues[0].message
+
+
+def test_load_presets_rejects_unexpected_fixed_target_key(tmp_path: Path) -> None:
+    preset_dir = tmp_path / "presets"
+    preset_dir.mkdir()
+    _write_preset(
+        preset_dir / "bad.yaml",
+        """
+version: 1
+campaign:
+  trial_id: trial_2
+  task_type: sfp
+  total_target_count: 1000
+  batch_default_count: 100
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {}
+scene:
+  env: training
+  fixed_target:
+    sfp:
+      rail: 1
+      port: sfp_port_0
+    sc: null
+    extra:
+      rail: 0
+      port: extra_port
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+    )
+
+    presets, issues = load_presets(preset_dir)
+
+    assert presets == ()
+    assert len(issues) == 1
+    assert issues[0].path.name == "bad.yaml"
+    assert "scene.fixed_target.extra" in issues[0].message
+
+
 @pytest.mark.parametrize(
     ("trial_id", "task_type", "scene_block"),
     [
