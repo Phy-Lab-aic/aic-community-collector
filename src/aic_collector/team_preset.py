@@ -41,6 +41,13 @@ class TeamPreset:
     tasks: Mapping[str, int]
     members: tuple[Mapping[str, str], ...]
     preset_hash: str
+    preset_name: str = ""
+    preset_path: Path = Path(".")
+    trial_id: Literal["trial_1", "trial_2", "trial_3"] | None = None
+    task_type: Literal["sfp", "sc"] | None = None
+    total_target_count: int | None = None
+    batch_default_count: int | None = None
+    is_catalog_preset: bool = False
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,12 @@ class SubmitResult:
     start_index: int
     written_count: int
     entry_id: int
+
+
+@dataclass(frozen=True)
+class CatalogPresetIssue:
+    path: Path
+    message: str
 
 
 _CONFIG_INDEX_RE_TEMPLATE = r"config_{task_type}_(\d+)\.yaml"
@@ -194,6 +207,26 @@ def _validate_strategy(value: Any) -> Literal["uniform", "lhs"]:
     return value
 
 
+def _validate_trial_id(value: Any) -> Literal["trial_1", "trial_2", "trial_3"]:
+    if value not in {"trial_1", "trial_2", "trial_3"}:
+        raise PresetError("Invalid campaign field: campaign.trial_id")
+    return value
+
+
+def _validate_task_type(value: Any) -> Literal["sfp", "sc"]:
+    if value not in {"sfp", "sc"}:
+        raise PresetError("Invalid campaign field: campaign.task_type")
+    return value
+
+
+def _validate_campaign_counts(total: Any, batch: Any) -> tuple[int, int]:
+    total_count = _validate_positive_int(total, "campaign.total_target_count")
+    batch_count = _validate_positive_int(batch, "campaign.batch_default_count")
+    if batch_count > total_count:
+        raise PresetError("Invalid campaign field: campaign.batch_default_count")
+    return total_count, batch_count
+
+
 def _validate_tasks(value: Any) -> dict[str, int]:
     tasks = _validate_mapping(value, "tasks")
     validated: dict[str, int] = {}
@@ -256,6 +289,87 @@ def _training_cfg_from_preset(preset: TeamPreset) -> dict[str, Any]:
     if collection_cfg:
         training_cfg["training"]["collection"] = collection_cfg
     return training_cfg
+
+
+def _validate_catalog_fixed_target(scene: Mapping[str, Any], task_type: str) -> None:
+    fixed_target = scene.get("fixed_target")
+    if not isinstance(fixed_target, Mapping):
+        raise PresetError("Invalid campaign field: scene.fixed_target")
+
+    active_fixed_target = fixed_target.get(task_type)
+    if active_fixed_target is None:
+        raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
+    if not isinstance(active_fixed_target, Mapping):
+        raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
+    if "rail" not in active_fixed_target or "port" not in active_fixed_target:
+        raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
+    rail = active_fixed_target["rail"]
+    port = active_fixed_target["port"]
+    if isinstance(rail, bool) or not isinstance(rail, int):
+        raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
+    if port is None or isinstance(port, bool):
+        raise PresetError(f"Invalid campaign field: scene.fixed_target.{task_type}")
+
+
+def _load_catalog_preset(path: Path) -> TeamPreset:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise PresetError(f"Malformed preset YAML: {path}") from exc
+
+    if not isinstance(raw, dict):
+        raise PresetError("Preset root must be a mapping")
+
+    campaign = _validate_mapping(_require_path(raw, "campaign"), "campaign")
+    trial_id = _validate_trial_id(_require_path(campaign, "trial_id"))
+    task_type = _validate_task_type(_require_path(campaign, "task_type"))
+    total_target_count, batch_default_count = _validate_campaign_counts(
+        _require_path(campaign, "total_target_count"),
+        _require_path(campaign, "batch_default_count"),
+    )
+    scene = _freeze(_validate_mapping(_require_path(raw, "scene"), "scene"))
+    _validate_catalog_fixed_target(scene, task_type)
+
+    base_seed = _validate_non_negative_int(_require_path(raw, "team.base_seed"), "team.base_seed")
+    shard_stride = _validate_positive_int(_require_path(raw, "team.shard_stride"), "team.shard_stride")
+    index_width = _validate_positive_int(_require_path(raw, "team.index_width"), "team.index_width")
+    strategy = _validate_strategy(_require_path(raw, "sampling.strategy"))
+    ranges = _freeze(_validate_mapping(_require_path(raw, "sampling.ranges"), "sampling.ranges"))
+    tasks = _freeze(_validate_tasks(_require_path(raw, "tasks")))
+    members = _validate_members(_require_path(raw, "members"))
+
+    return TeamPreset(
+        base_seed=base_seed,
+        shard_stride=shard_stride,
+        index_width=index_width,
+        strategy=strategy,
+        ranges=ranges,
+        scene=scene,
+        tasks=tasks,
+        members=members,
+        preset_hash=_canonical_hash(raw),
+        preset_name=path.stem,
+        preset_path=path,
+        trial_id=trial_id,
+        task_type=task_type,
+        total_target_count=total_target_count,
+        batch_default_count=batch_default_count,
+        is_catalog_preset=True,
+    )
+
+
+def load_presets(dir_path: Path) -> tuple[tuple[TeamPreset, ...], tuple[CatalogPresetIssue, ...]]:
+    if not dir_path.exists():
+        return (), ()
+
+    presets: list[TeamPreset] = []
+    issues: list[CatalogPresetIssue] = []
+    for path in sorted(dir_path.glob("*.yaml")):
+        try:
+            presets.append(_load_catalog_preset(path))
+        except PresetError as exc:
+            issues.append(CatalogPresetIssue(path=path, message=str(exc)))
+    return tuple(presets), tuple(issues)
 
 
 def _member_index(preset: TeamPreset, member_id: str) -> int:
@@ -609,4 +723,7 @@ def load_preset(path: Path) -> TeamPreset | None:
         tasks=tasks,
         members=members,
         preset_hash=_canonical_hash(raw),
+        preset_name=path.stem,
+        preset_path=path,
+        is_catalog_preset=False,
     )

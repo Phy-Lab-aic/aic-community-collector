@@ -19,6 +19,7 @@ from aic_collector.team_preset import (  # noqa: E402
     TeamPreset,
     adjust_claim_count,
     append_claim,
+    load_presets,
     load_preset,
     next_start_index_in_slot,
     rollback_claim,
@@ -83,6 +84,132 @@ members:
 
 def test_load_preset_missing_file_returns_none(tmp_path: Path) -> None:
     assert load_preset(tmp_path / "missing.yaml") is None
+
+
+def test_load_presets_reads_sorted_catalog_and_campaign_fields(tmp_path: Path) -> None:
+    preset_dir = tmp_path / "presets"
+    preset_dir.mkdir()
+
+    trial_2_path = _write_preset(
+        preset_dir / "trial_2.yaml",
+        """
+version: 1
+campaign:
+  trial_id: trial_2
+  task_type: sfp
+  total_target_count: 1000
+  batch_default_count: 100
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {}
+scene:
+  env: training
+  fixed_target:
+    sfp:
+      rail: 1
+      port: sfp_port_0
+    sc: null
+tasks:
+  sfp: 12
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+    )
+    _write_preset(
+        preset_dir / "trial_1.yaml",
+        trial_2_path.read_text(encoding="utf-8").replace("trial_2", "trial_1").replace(
+            "rail: 1", "rail: 0"
+        ),
+    )
+
+    presets, issues = load_presets(preset_dir)
+
+    assert [preset.preset_name for preset in presets] == ["trial_1", "trial_2"]
+    assert issues == ()
+    assert presets[0].trial_id == "trial_1"
+    assert presets[0].task_type == "sfp"
+    assert presets[0].total_target_count == 1000
+    assert presets[0].batch_default_count == 100
+    assert presets[0].is_catalog_preset is True
+
+
+def test_load_presets_reports_invalid_catalog_files(tmp_path: Path) -> None:
+    preset_dir = tmp_path / "presets"
+    preset_dir.mkdir()
+    _write_preset(
+        preset_dir / "bad.yaml",
+        """
+version: 1
+campaign:
+  trial_id: trial_2
+  task_type: sfp
+  total_target_count: 100
+  batch_default_count: 200
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {}
+scene:
+  env: training
+  fixed_target:
+    sfp:
+      rail: 1
+      port: sfp_port_0
+    sc: null
+tasks:
+  sfp: 12
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+    )
+
+    presets, issues = load_presets(preset_dir)
+
+    assert presets == ()
+    assert len(issues) == 1
+    assert issues[0].path.name == "bad.yaml"
+    assert "batch_default_count" in issues[0].message
+
+
+def test_load_preset_legacy_schema_still_works(tmp_path: Path) -> None:
+    path = _write_preset(
+        tmp_path / "preset.yaml",
+        """
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges:
+    nic_translation:
+      min: -0.02
+      max: 0.02
+scene:
+  env: training
+tasks:
+  sfp: 12
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+    )
+
+    preset = load_preset(path)
+
+    assert preset is not None
+    assert preset.is_catalog_preset is False
+    assert preset.trial_id is None
+    assert preset.task_type is None
 
 
 def test_load_preset_malformed_yaml_raises_preset_error(tmp_path: Path) -> None:
