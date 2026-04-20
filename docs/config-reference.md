@@ -223,3 +223,27 @@ configs/train/
 
 - 각 샘플의 RNG seed는 `base_seed + sample_index`로 파생 → append 모드에서도 새 샘플이 기존과 중복되지 않음.
 - 동일 `base_seed` + 동일 `count` + 동일 `task_type` → 동일 config 시퀀스.
+
+## Team Campaign Preset (`configs/team/presets/*.yaml`)
+
+| 경로 | 타입 | 설명 |
+|------|------|------|
+| `campaign.trial_id` | string | `trial_1`, `trial_2`, `trial_3` 중 하나 |
+| `campaign.task_type` | string | `sfp` 또는 `sc` |
+| `campaign.total_target_count` | int | 캠페인 전체 목표 수량 |
+| `campaign.batch_default_count` | int | UI 기본 배치 크기 |
+| `scene.fixed_target` | mapping | active task의 고정 rail/port |
+
+예시:
+
+```yaml
+campaign:
+  trial_id: trial_3
+  task_type: sc
+  total_target_count: 1000
+  batch_default_count: 100
+scene:
+  fixed_target:
+    sfp: null
+    sc: {rail: 1, port: "sc_port_1"}
+```
