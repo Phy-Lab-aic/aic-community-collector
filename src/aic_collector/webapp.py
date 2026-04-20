@@ -19,7 +19,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -1386,6 +1386,24 @@ def _catalog_preset_label(preset: TeamPreset) -> str:
     return f"{preset.preset_path.name} - {preset.trial_id} - {task_label}"
 
 
+def resolve_team_requested_count(
+    preset: TeamPreset,
+    session_state: MutableMapping[str, Any],
+) -> int | None:
+    if preset.is_catalog_preset:
+        current_preset_name = preset.preset_name
+        if current_preset_name and session_state.get("mgr_active_team_preset") != current_preset_name:
+            session_state["mgr_active_team_preset"] = current_preset_name
+            return None
+
+        active_task_type = _active_team_task_type(preset)
+        if active_task_type == "sc":
+            return session_state.get("mgr_sc_count")
+        return session_state.get("mgr_sfp_count")
+
+    return session_state.get("mgr_sfp_count")
+
+
 # ---------------------------------------------------------------------------
 # Config 생성
 # ---------------------------------------------------------------------------
@@ -1608,7 +1626,10 @@ if st is not None:
                         queue_root=mgr_queue_root,
                         ledger_path=LEDGER_PATH,
                         member_id=mgr_team_member_id,
-                        requested_sfp_count=st.session_state.get("mgr_sfp_count"),
+                        requested_sfp_count=resolve_team_requested_count(
+                            team_preset,
+                            st.session_state,
+                        ),
                     )
                     nic_range = _preset_scene_count_range(
                         team_preset,

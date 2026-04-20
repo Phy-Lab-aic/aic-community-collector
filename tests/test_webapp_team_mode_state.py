@@ -22,6 +22,7 @@ from aic_collector.webapp import (  # noqa: E402
     build_team_preview_scene_config,
     build_validated_preset_ranges,
     build_team_campaign_summary,
+    resolve_team_requested_count,
     render_scene_svg,
     build_team_slot_summary,
     build_team_submit_preset,
@@ -658,6 +659,57 @@ def test_build_team_mode_state_supports_sc_catalog_preset(tmp_path: Path) -> Non
     assert state["task_type"] == "sc"
     assert state["preview_filename"] == "config_sc_000000.yaml"
     assert state["default_count"] == 100
+
+
+def test_resolve_team_requested_count_resets_on_catalog_preset_switch() -> None:
+    sfp_preset = TeamPreset(
+        base_seed=42,
+        shard_stride=100000,
+        index_width=6,
+        strategy="uniform",
+        ranges=_preset().ranges,
+        scene={"fixed_target": {"sfp": {"rail": 0, "port": "sfp_port_0"}, "sc": None}},
+        tasks={"sfp_default_count": 0},
+        members=_preset().members,
+        preset_hash="sha256:trial_1",
+        preset_name="trial_1",
+        preset_path=Path("trial_1.yaml"),
+        trial_id="trial_1",
+        task_type="sfp",
+        total_target_count=1000,
+        batch_default_count=100,
+        is_catalog_preset=True,
+    )
+    sc_preset = TeamPreset(
+        base_seed=42,
+        shard_stride=100000,
+        index_width=6,
+        strategy="uniform",
+        ranges=_preset().ranges,
+        scene={"fixed_target": {"sfp": None, "sc": {"rail": 1, "port": "sc_port_1"}}},
+        tasks={"sc_default_count": 0},
+        members=_preset().members,
+        preset_hash="sha256:trial_3",
+        preset_name="trial_3",
+        preset_path=Path("trial_3.yaml"),
+        trial_id="trial_3",
+        task_type="sc",
+        total_target_count=1000,
+        batch_default_count=100,
+        is_catalog_preset=True,
+    )
+    session_state = {
+        "mgr_active_team_preset": "trial_1",
+        "mgr_sfp_count": 35,
+        "mgr_sc_count": 0,
+    }
+
+    assert resolve_team_requested_count(sfp_preset, session_state) == 35
+    assert resolve_team_requested_count(sc_preset, session_state) is None
+    assert session_state["mgr_active_team_preset"] == "trial_3"
+
+    session_state["mgr_sc_count"] = 22
+    assert resolve_team_requested_count(sc_preset, session_state) == 22
 
 
 def test_build_team_campaign_summary_formats_progress() -> None:
