@@ -139,6 +139,26 @@ members:
     assert presets[0].is_catalog_preset is True
 
 
+def test_load_presets_reads_shipped_catalog_files() -> None:
+    presets, issues = load_presets(PROJECT_DIR / "configs" / "team" / "presets")
+
+    assert issues == ()
+    assert [preset.preset_name for preset in presets] == ["trial_1", "trial_2", "trial_3"]
+    assert [
+        (
+            preset.trial_id,
+            preset.task_type,
+            preset.total_target_count,
+            preset.batch_default_count,
+        )
+        for preset in presets
+    ] == [
+        ("trial_1", "sfp", 1000, 100),
+        ("trial_2", "sfp", 1000, 100),
+        ("trial_3", "sc", 1000, 100),
+    ]
+
+
 def test_load_presets_reports_invalid_catalog_files(tmp_path: Path) -> None:
     preset_dir = tmp_path / "presets"
     preset_dir.mkdir()
