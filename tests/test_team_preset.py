@@ -113,8 +113,6 @@ scene:
       rail: 1
       port: sfp_port_0
     sc: null
-tasks:
-  sfp: 12
 members:
   - id: alpha
     name: Alpha
@@ -164,8 +162,6 @@ scene:
       rail: 1
       port: sfp_port_0
     sc: null
-tasks:
-  sfp: 12
 members:
   - id: alpha
     name: Alpha
@@ -178,6 +174,148 @@ members:
     assert len(issues) == 1
     assert issues[0].path.name == "bad.yaml"
     assert "batch_default_count" in issues[0].message
+
+
+@pytest.mark.parametrize(
+    ("name", "scene_block", "message_fragment"),
+    [
+        (
+            "missing_fixed_target.yaml",
+            """
+scene:
+  env: training
+""".strip(),
+            "scene.fixed_target",
+        ),
+        (
+            "missing_active_branch.yaml",
+            """
+scene:
+  env: training
+  fixed_target:
+    sfp: null
+    sc:
+      rail: 1
+      port: sc_port_1
+""".strip(),
+            "scene.fixed_target.sfp",
+        ),
+        (
+            "malformed_active_branch.yaml",
+            """
+scene:
+  env: training
+  fixed_target:
+    sfp:
+      rail: 1
+    sc: null
+""".strip(),
+            "scene.fixed_target.sfp",
+        ),
+    ],
+)
+def test_load_presets_rejects_invalid_active_fixed_target_shapes(
+    tmp_path: Path, name: str, scene_block: str, message_fragment: str
+) -> None:
+    preset_dir = tmp_path / "presets"
+    preset_dir.mkdir()
+    _write_preset(
+        preset_dir / name,
+        f"""
+version: 1
+campaign:
+  trial_id: trial_2
+  task_type: sfp
+  total_target_count: 1000
+  batch_default_count: 100
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {{}}
+{scene_block}
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+    )
+
+    presets, issues = load_presets(preset_dir)
+
+    assert presets == ()
+    assert len(issues) == 1
+    assert issues[0].path.name == name
+    assert message_fragment in issues[0].message
+
+
+@pytest.mark.parametrize(
+    ("trial_id", "task_type", "scene_block"),
+    [
+        (
+            "trial_2",
+            "sfp",
+            """
+scene:
+  env: training
+  fixed_target:
+    sfp:
+      rail: 1
+      port: sfp_port_0
+    sc: null
+""".strip(),
+        ),
+        (
+            "trial_3",
+            "sc",
+            """
+scene:
+  env: training
+  fixed_target:
+    sfp: null
+    sc:
+      rail: 1
+      port: sc_port_1
+""".strip(),
+        ),
+    ],
+)
+def test_load_presets_accepts_valid_inactive_null_and_active_present_fixed_targets(
+    tmp_path: Path, trial_id: str, task_type: str, scene_block: str
+) -> None:
+    preset_dir = tmp_path / "presets"
+    preset_dir.mkdir()
+    _write_preset(
+        preset_dir / f"{trial_id}.yaml",
+        f"""
+version: 1
+campaign:
+  trial_id: {trial_id}
+  task_type: {task_type}
+  total_target_count: 1000
+  batch_default_count: 100
+team:
+  base_seed: 100
+  shard_stride: 17
+  index_width: 4
+sampling:
+  strategy: uniform
+  ranges: {{}}
+{scene_block}
+members:
+  - id: alpha
+    name: Alpha
+""".strip(),
+    )
+
+    presets, issues = load_presets(preset_dir)
+
+    assert [preset.preset_name for preset in presets] == [trial_id]
+    assert issues == ()
+    assert presets[0].trial_id == trial_id
+    assert presets[0].task_type == task_type
+    assert presets[0].is_catalog_preset is True
 
 
 def test_load_preset_legacy_schema_still_works(tmp_path: Path) -> None:

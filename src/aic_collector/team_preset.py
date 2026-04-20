@@ -335,7 +335,7 @@ def _load_catalog_preset(path: Path) -> TeamPreset:
     index_width = _validate_positive_int(_require_path(raw, "team.index_width"), "team.index_width")
     strategy = _validate_strategy(_require_path(raw, "sampling.strategy"))
     ranges = _freeze(_validate_mapping(_require_path(raw, "sampling.ranges"), "sampling.ranges"))
-    tasks = _freeze(_validate_tasks(_require_path(raw, "tasks")))
+    tasks = _freeze({})
     members = _validate_members(_require_path(raw, "members"))
 
     return TeamPreset(
