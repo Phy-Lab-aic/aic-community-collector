@@ -1694,21 +1694,40 @@ if st is not None:
             if team_campaign_summary["campaign_complete_info"]:
                 st.success(team_campaign_summary["campaign_complete_info"])
 
+        team_active_task_type = (
+            str(team_state["task_type"])
+            if team_widgets_locked and team_state is not None
+            else "sfp"
+        )
+        team_active_count_limit = (
+            int(team_state["remaining_slots"])
+            if team_widgets_locked and team_state is not None
+            else 10000
+        )
+        if (
+            team_widgets_locked
+            and team_preset is not None
+            and team_preset.is_catalog_preset
+            and team_state is not None
+        ):
+            team_active_count_limit = min(
+                team_active_count_limit,
+                int(team_state["campaign_remaining"]),
+            )
+
         # 기본 파라미터
         col_sfp, col_sc = st.columns(2)
         with col_sfp:
-            team_active_task_type = str(team_state["task_type"]) if team_widgets_locked and team_state is not None else "sfp"
             mgr_sfp_count = st.number_input(
                 f"{team_active_task_type.upper()} configs" if team_widgets_locked else "SFP configs",
                 min_value=0,
-                max_value=int(team_state["remaining_slots"]) if team_widgets_locked and team_state is not None else 10000,
+                max_value=team_active_count_limit,
                 value=int(team_state["selected_count"]) if team_widgets_locked and team_state is not None else 20,
                 step=1 if team_widgets_locked else 10,
                 key="mgr_sfp_count",
                 disabled=bool(
                     team_widgets_locked
-                    and team_state is not None
-                    and int(team_state["remaining_slots"]) == 0
+                    and team_active_count_limit == 0
                 ),
                 help=(
                     "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
@@ -1797,6 +1816,7 @@ if st is not None:
             preview_fixed_target = None
             if team_widgets_locked and team_preview_scene_cfg is not None:
                 preview_fixed_target = team_preview_scene_cfg.get("collection", {}).get("fixed_target")
+            preview_task_type = team_active_task_type if team_widgets_locked else "sfp"
             _scene_svg = render_scene_svg(
                 nic_range=tuple(mgr_nic_count_range),
                 sc_range=tuple(mgr_sc_count_range),
@@ -1804,7 +1824,7 @@ if st is not None:
                 ranges=None,  # pose 값은 시각에 영향 없음 → 기본값
                 fixed_target=preview_fixed_target,
                 seed=int(st.session_state.get("mgr_seed", 42)),
-                task_type="sfp",
+                task_type=preview_task_type,
                 sample_count=3,
             )
             st.components.v1.html(

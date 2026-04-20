@@ -436,6 +436,7 @@ def test_render_scene_svg_threads_fixed_target_to_sampler(monkeypatch: pytest.Mo
 
     def fake_sample_scenes(cfg: dict[str, object], task_type: str, sample_count: int, seed: int) -> list[object]:
         seen["cfg"] = cfg
+        seen["task_type"] = task_type
         return [
             SimpleNamespace(
                 sample_index=0,
@@ -474,7 +475,57 @@ def test_render_scene_svg_threads_fixed_target_to_sampler(monkeypatch: pytest.Mo
             "ranges": {},
         }
     }
+    assert seen["task_type"] == "sfp"
     assert "rail 0, sfp_port_0" in svg
+
+
+def test_render_scene_svg_threads_sc_task_type_to_sampler(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_sample_scenes(cfg: dict[str, object], task_type: str, sample_count: int, seed: int) -> list[object]:
+        seen["cfg"] = cfg
+        seen["task_type"] = task_type
+        return [
+            SimpleNamespace(
+                sample_index=0,
+                trials=[
+                    SimpleNamespace(
+                        target_rail=1,
+                        target_port_name="sc_port_1",
+                        nic_rails=[0],
+                        sc_rails=[1],
+                        task_type="sc",
+                    )
+                ],
+            )
+        ]
+
+    monkeypatch.setattr("aic_collector.sampler.sample_scenes", fake_sample_scenes)
+
+    svg = render_scene_svg(
+        nic_range=(1, 1),
+        sc_range=(1, 1),
+        target_cycling=False,
+        fixed_target={"sc": {"rail": 1, "port": "sc_port_1"}},
+        task_type="sc",
+        sample_count=1,
+    )
+
+    assert seen["cfg"] == {
+        "training": {
+            "scene": {
+                "nic_count_range": [1, 1],
+                "sc_count_range": [1, 1],
+                "target_cycling": False,
+            },
+            "collection": {
+                "fixed_target": {"sc": {"rail": 1, "port": "sc_port_1"}},
+            },
+            "ranges": {},
+        }
+    }
+    assert seen["task_type"] == "sc"
+    assert "rail 1, sc_port_1" in svg
 
 
 def test_build_team_slot_summary_returns_none_without_active_team_state() -> None:
@@ -561,6 +612,7 @@ def test_build_team_mode_state_uses_batch_default_and_campaign_remaining(tmp_pat
         queue_root=tmp_path / "queue",
         ledger_path=ledger,
         member_id="m0",
+        requested_sfp_count=999,
     )
 
     assert state["task_type"] == "sfp"
