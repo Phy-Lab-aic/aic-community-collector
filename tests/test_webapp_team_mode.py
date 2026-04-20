@@ -361,3 +361,95 @@ def test_submit_team_claim_concurrent_submissions_for_same_member_use_disjoint_r
         "config_sfp_000003.yaml",
     ]
     assert [entry["start_index"] for entry in _ledger_entries(ledger_path)] == [0, 2]
+
+
+def test_submit_team_claim_trial_2_writes_fixed_sfp_target(tmp_path: Path) -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=100_000,
+        index_width=6,
+        strategy="uniform",
+        ranges={},
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+            "fixed_target": {"sfp": {"rail": 1, "port": "sfp_port_0"}, "sc": None},
+        },
+        tasks={"sfp": 2, "sc": 0},
+        members=(
+            {"id": "M0", "name": "alice"},
+            {"id": "M1", "name": "bob"},
+        ),
+        preset_hash="sha256:trial_2",
+        preset_name="trial_2",
+        preset_path=tmp_path / "trial_2.yaml",
+        trial_id="trial_2",
+        task_type="sfp",
+        total_target_count=1000,
+        batch_default_count=100,
+        is_catalog_preset=True,
+    )
+    ledger = tmp_path / "seed_ledger.yaml"
+    ledger.write_text("entries: []\n", encoding="utf-8")
+
+    result = submit_team_claim(
+        preset,
+        member_id="M1",
+        task_type="sfp",
+        queue_root=tmp_path / "queue",
+        ledger_path=ledger,
+        template_path=PROJECT_DIR / "configs/community_random_config.yaml",
+    )
+
+    assert result.written_count == 2
+    payload = yaml.safe_load(
+        (tmp_path / "queue" / "sfp" / "pending" / "config_sfp_100000.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["trials"]["trial_1"]["tasks"]["task_1"]["port_name"] == "sfp_port_0"
+    assert (
+        payload["trials"]["trial_1"]["tasks"]["task_1"]["target_module_name"]
+        == "nic_card_mount_1"
+    )
+
+
+def test_submit_team_claim_trial_3_writes_sc_files(tmp_path: Path) -> None:
+    preset = TeamPreset(
+        base_seed=42,
+        shard_stride=100_000,
+        index_width=6,
+        strategy="uniform",
+        ranges={},
+        scene={
+            "nic_count_range": [1, 1],
+            "sc_count_range": [1, 1],
+            "target_cycling": False,
+            "fixed_target": {"sfp": None, "sc": {"rail": 1, "port": "sc_port_1"}},
+        },
+        tasks={"sfp": 0, "sc": 2},
+        members=({"id": "M0", "name": "alice"},),
+        preset_hash="sha256:trial_3",
+        preset_name="trial_3",
+        preset_path=tmp_path / "trial_3.yaml",
+        trial_id="trial_3",
+        task_type="sc",
+        total_target_count=1000,
+        batch_default_count=100,
+        is_catalog_preset=True,
+    )
+    ledger = tmp_path / "seed_ledger.yaml"
+    ledger.write_text("entries: []\n", encoding="utf-8")
+
+    result = submit_team_claim(
+        preset,
+        member_id="M0",
+        task_type="sc",
+        queue_root=tmp_path / "queue",
+        ledger_path=ledger,
+        template_path=PROJECT_DIR / "configs/community_random_config.yaml",
+    )
+
+    assert result.written_count == 2
+    assert (tmp_path / "queue" / "sc" / "pending" / "config_sc_000000.yaml").exists()

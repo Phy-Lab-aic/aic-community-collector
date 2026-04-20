@@ -92,7 +92,8 @@ import yaml
 
 # PROJECT_DIR = aic-community-collector/ (루트)
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
-PRESET_PATH = PROJECT_DIR / "configs/team/preset.yaml"
+PRESET_DIR = PROJECT_DIR / "configs/team/presets"
+LEGACY_PRESET_PATH = PROJECT_DIR / "configs/team/preset.yaml"
 LEDGER_PATH = PROJECT_DIR / "configs/team/seed_ledger.yaml"
 
 # streamlit run으로 실행될 때는 패키지 설치 없이도 import 가능해야 함
@@ -101,11 +102,13 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from aic_collector.team_preset import (  # noqa: E402
+    CatalogPresetIssue,
     PresetError,
     SlotExhausted,
     TeamPreset,
     claimed_count_for_preset,
     load_preset,
+    load_presets,
     next_start_index_in_slot,
     slot_range,
     submit_team_claim,
@@ -1378,6 +1381,11 @@ def build_team_slot_summary(
     return summary
 
 
+def _catalog_preset_label(preset: TeamPreset) -> str:
+    task_label = str(preset.task_type or "").upper() or "?"
+    return f"{preset.preset_path.name} - {preset.trial_id} - {task_label}"
+
+
 # ---------------------------------------------------------------------------
 # Config 생성
 # ---------------------------------------------------------------------------
@@ -1496,15 +1504,56 @@ if st is not None:
     
         team_preset: TeamPreset | None = None
         team_mode_error: PresetError | None = None
-        try:
-            team_preset = load_preset(PRESET_PATH)
-        except PresetError as exc:
-            team_mode_error = exc
-    
+        catalog_presets: tuple[TeamPreset, ...] = ()
+        catalog_issues: tuple[CatalogPresetIssue, ...] = ()
+        team_mode_is_catalog = False
+
+        has_catalog_files = PRESET_DIR.exists() and any(PRESET_DIR.glob("*.yaml"))
+        if has_catalog_files:
+            catalog_presets, catalog_issues = load_presets(PRESET_DIR)
+            for issue in catalog_issues:
+                st.error(f"팀 preset 오류 ({issue.path.name}): {issue.message}")
+
+            if catalog_presets:
+                team_mode_is_catalog = True
+                preset_names = [preset.preset_name for preset in catalog_presets]
+                if st.session_state.get("mgr_team_preset") not in preset_names:
+                    st.session_state["mgr_team_preset"] = preset_names[0]
+                selected_preset_name = st.selectbox(
+                    "Preset",
+                    options=preset_names,
+                    key="mgr_team_preset",
+                    format_func=lambda name: next(
+                        _catalog_preset_label(preset)
+                        for preset in catalog_presets
+                        if preset.preset_name == name
+                    ),
+                )
+                team_preset = next(
+                    preset
+                    for preset in catalog_presets
+                    if preset.preset_name == selected_preset_name
+                )
+            else:
+                team_mode_error = PresetError(
+                    "No valid team campaign presets found in configs/team/presets"
+                )
+        else:
+            try:
+                team_preset = load_preset(LEGACY_PRESET_PATH)
+            except PresetError as exc:
+                team_mode_error = exc
+
         if team_mode_error is not None:
             st.error(f"팀 preset 로드 실패: {team_mode_error}")
         elif team_preset is not None:
-            st.info(f"👥 Team mode 활성화 · preset {team_preset.preset_hash}")
+            if team_mode_is_catalog:
+                st.info(
+                    "👥 Team mode 활성화 · catalog preset "
+                    f"{team_preset.preset_name} · {team_preset.preset_hash}"
+                )
+            else:
+                st.info(f"👥 Team mode 활성화 · preset {team_preset.preset_hash}")
     
         # 큐 루트 — 작업 관리·작업 실행 탭이 shared_queue_root 세션 키로 양방향 싱크
         _DEFAULT_QUEUE_ROOT = str(PROJECT_DIR / "configs/train")
@@ -1535,7 +1584,6 @@ if st is not None:
         team_member_options: list[str] = []
         team_member_lookup: dict[str, dict[str, str]] = {}
         mgr_team_member_id: str | None = None
-        mgr_team_sc_default_count = 0
         if team_mode_active and team_preset is not None:
             team_member_lookup = {
                 str(member["id"]): {str(k): str(v) for k, v in member.items()}
@@ -1551,7 +1599,8 @@ if st is not None:
                     st.session_state["mgr_team_member"] = team_member_options[0]
                 mgr_team_member_id = str(st.session_state["mgr_team_member"])
                 try:
-                    mgr_team_sc_default_count = _preset_task_count(team_preset, "sc_default_count")
+                    if not team_preset.is_catalog_preset:
+                        _preset_task_count(team_preset, "sc_default_count")
                     validated_preset_ranges = build_validated_preset_ranges(team_preset)
                     team_preview_scene_cfg = build_team_preview_scene_config(team_preset)
                     team_state = build_team_mode_state(
@@ -1583,8 +1632,14 @@ if st is not None:
                     )
                     st.session_state["mgr_param_strategy"] = str(team_preset.strategy)
                     st.session_state["mgr_seed"] = int(team_preset.base_seed)
-                    st.session_state["mgr_sc_count"] = mgr_team_sc_default_count
-                    st.session_state["mgr_sfp_count"] = int(team_state["selected_sfp_count"])
+                    active_task_type = str(team_state["task_type"])
+                    active_count = int(team_state["selected_count"])
+                    if active_task_type == "sfp":
+                        st.session_state["mgr_sfp_count"] = active_count
+                        st.session_state["mgr_sc_count"] = 0
+                    else:
+                        st.session_state["mgr_sfp_count"] = 0
+                        st.session_state["mgr_sc_count"] = active_count
                     for range_key in ("nic_translation", "nic_yaw", "sc_translation"):
                         st.session_state[f"mgr_range_{range_key}_range"] = validated_preset_ranges[range_key]
                     for range_key in ("gripper_xy", "gripper_z", "gripper_rpy"):
@@ -1595,9 +1650,15 @@ if st is not None:
                     team_mode_active = False
 
         if team_mode_active:
+            active_label = (
+                str(team_state["task_type"]).upper()
+                if team_state is not None
+                else "SFP"
+            )
             st.caption(
-                "Team mode는 현재 SFP config 생성만 지원합니다. `큐 루트`는 로컬 config 출력 위치만 바꾸고, "
-                f"슬롯 예약은 항상 전역 ledger `{LEDGER_PATH}` 기준으로 처리됩니다."
+                f"Team mode는 현재 {active_label} config 생성에 맞춰 고정됩니다. `큐 루트`는 "
+                f"로컬 config 출력 위치만 바꾸고, 슬롯 예약은 항상 전역 ledger `{LEDGER_PATH}` "
+                "기준으로 처리됩니다."
             )
 
         st.divider()
@@ -1697,7 +1758,7 @@ if st is not None:
         team_active_task_type = (
             str(team_state["task_type"])
             if team_widgets_locked and team_state is not None
-            else "sfp"
+            else None
         )
         team_active_count_limit = (
             int(team_state["remaining_slots"])
@@ -1718,17 +1779,24 @@ if st is not None:
         # 기본 파라미터
         col_sfp, col_sc = st.columns(2)
         with col_sfp:
+            sfp_disabled = bool(
+                team_widgets_locked
+                and (team_active_task_type != "sfp" or team_active_count_limit == 0)
+            )
+            sfp_max_value = int(team_active_count_limit) if not sfp_disabled else 0
+            sfp_value = (
+                int(team_state["selected_count"])
+                if team_widgets_locked and team_state is not None and team_active_task_type == "sfp"
+                else (0 if team_widgets_locked else 20)
+            )
             mgr_sfp_count = st.number_input(
-                f"{team_active_task_type.upper()} configs" if team_widgets_locked else "SFP configs",
+                "SFP configs",
                 min_value=0,
-                max_value=team_active_count_limit,
-                value=int(team_state["selected_count"]) if team_widgets_locked and team_state is not None else 20,
+                max_value=sfp_max_value,
+                value=sfp_value,
                 step=1 if team_widgets_locked else 10,
                 key="mgr_sfp_count",
-                disabled=bool(
-                    team_widgets_locked
-                    and team_active_count_limit == 0
-                ),
+                disabled=sfp_disabled,
                 help=(
                     "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
                     "균등 순환. 10의 배수 권장.  \n"
@@ -1736,14 +1804,24 @@ if st is not None:
                 ),
             )
         with col_sc:
+            sc_disabled = bool(
+                team_widgets_locked
+                and (team_active_task_type != "sc" or team_active_count_limit == 0)
+            )
+            sc_max_value = int(team_active_count_limit) if not sc_disabled else 0
+            sc_value = (
+                int(team_state["selected_count"])
+                if team_widgets_locked and team_state is not None and team_active_task_type == "sc"
+                else (0 if team_widgets_locked else 10)
+            )
             mgr_sc_count = st.number_input(
                 "SC configs",
                 min_value=0,
-                max_value=10000,
-                value=mgr_team_sc_default_count if team_widgets_locked else 10,
+                max_value=sc_max_value if team_widgets_locked else 10000,
+                value=sc_value,
                 step=1 if team_widgets_locked else 2,
                 key="mgr_sc_count",
-                disabled=team_widgets_locked,
+                disabled=sc_disabled,
                 help=(
                     "target cycling ON 시 SC 2종 target (rail 0·1)을 "
                     "균등 순환. 2의 배수 권장.  \n"
@@ -1816,7 +1894,7 @@ if st is not None:
             preview_fixed_target = None
             if team_widgets_locked and team_preview_scene_cfg is not None:
                 preview_fixed_target = team_preview_scene_cfg.get("collection", {}).get("fixed_target")
-            preview_task_type = team_active_task_type if team_widgets_locked else "sfp"
+            preview_task_type = team_active_task_type or "sfp"
             _scene_svg = render_scene_svg(
                 nic_range=tuple(mgr_nic_count_range),
                 sc_range=tuple(mgr_sc_count_range),
@@ -2005,7 +2083,12 @@ if st is not None:
                 st.info("생성할 count가 0입니다.")
     
         # 생성 버튼 — slider가 min≤max를 구조적으로 보장하므로 추가 검증 불필요
-        total_new = int(mgr_sfp_count) if team_widgets_locked else int(mgr_sfp_count) + int(mgr_sc_count)
+        if team_widgets_locked and team_active_task_type == "sc":
+            total_new = int(mgr_sc_count)
+        elif team_widgets_locked:
+            total_new = int(mgr_sfp_count)
+        else:
+            total_new = int(mgr_sfp_count) + int(mgr_sc_count)
         btn_disabled = total_new == 0 or team_mode_error is not None
         if st.button(
             f"📁 큐에 추가 ({total_new}개 생성)",
@@ -2018,14 +2101,18 @@ if st is not None:
                 st.error(f"템플릿 없음: {template}")
             elif team_widgets_locked and team_preset is not None and mgr_team_member_id is not None:
                 try:
+                    submit_task_type = str(team_state["task_type"]) if team_state is not None else "sfp"
+                    submit_count = int(
+                        mgr_sfp_count if submit_task_type == "sfp" else mgr_sc_count
+                    )
                     submit_preset = build_team_submit_preset(
                         team_preset,
-                        count=int(mgr_sfp_count),
+                        count=submit_count,
                     )
                     result = submit_team_claim(
                         submit_preset,
                         member_id=mgr_team_member_id,
-                        task_type=str(team_state["task_type"]),
+                        task_type=submit_task_type,
                         queue_root=mgr_queue_root,
                         ledger_path=LEDGER_PATH,
                         template_path=template,
