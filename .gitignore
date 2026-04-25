@@ -10,3 +10,6 @@ dist/
 !.claude/commands/
 .tmp/
 configs/train/
+.agents
+.omc/
+configs/team/*.lock
