@@ -446,6 +446,8 @@ git commit -m "feat(team): add reproducibility gate helpers"
 - Modify: `src/aic_collector/team_preset.py` (`submit_team_claim`)
 - Test: `tests/test_team_preset.py` (add integration tests)
 
+- Note: the `_make_submit_fixture` template was widened in Task 6 to include `task_board_limits: {}` and `robot: {}` (required by `scene_builder.load_fixed_sections` for the full submit path). The fixture block below reflects that wider template content.
+
 - [ ] **Step 1: Write failing integration test**
 
 Append to `tests/test_team_preset.py` (uses helpers already present in the file):
@@ -471,7 +473,7 @@ def test_submit_team_claim_blocks_on_dirty_sha(
             template_path=template_path,
         )
     # Ledger must be untouched.
-    assert _load_ledger(ledger_path) == {"entries": []} or not ledger_path.exists()
+    assert not ledger_path.exists() or _load_ledger(ledger_path) == {"entries": []}
 
 
 def test_submit_team_claim_blocks_on_preset_hash_drift(
@@ -536,7 +538,7 @@ scene:
   nic_count_range: [1, 1]
   sc_count_range:  [1, 1]
   target_cycling:  true
-tasks: {sfp_default_count: 10, sc_default_count: 0}
+tasks: {sfp_default_count: 10, sc_default_count: 0, sfp: 10}
 members:
   - {id: M0, name: alice}
   - {id: M1, name: bob}
@@ -549,7 +551,7 @@ members:
     queue_root.mkdir()
     ledger_path = tmp_path / "ledger.yaml"
     template_path = tmp_path / "template.yaml"
-    template_path.write_text("scoring:\n  topics: []\n", encoding="utf-8")
+    template_path.write_text("scoring:\n  topics: []\ntask_board_limits: {}\nrobot: {}\n", encoding="utf-8")
     return preset, queue_root, ledger_path, template_path
 ```
 

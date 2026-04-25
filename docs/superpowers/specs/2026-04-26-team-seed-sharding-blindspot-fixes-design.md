@@ -276,3 +276,6 @@ operator: $ python -m aic_collector.team_preset reconcile \
 ## Open Questions
 
 None at design time. The reconcile trigger stays manual in this round; if operators forget to run it, the worst case is a stale `validated_count`, not data loss. Promotion to a prefect-flow hook is a follow-up after we observe how often the manual step is missed.
+
+---
+**Status (2026-04-26):** Implemented in commits on `subagent/team-seed-sharding`. Rollout step 2 (`scripts/archive_legacy_queue.sh`) and step 4 (post-collection reconcile) remain manual operator actions.
