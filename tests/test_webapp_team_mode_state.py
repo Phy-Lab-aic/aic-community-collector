@@ -24,6 +24,8 @@ from aic_collector.webapp import (  # noqa: E402
     render_scene_svg,
     build_team_slot_summary,
     build_team_submit_preset,
+    sync_manage_count_state,
+    sync_manage_widget_state,
 )
 
 
@@ -498,6 +500,126 @@ def test_build_team_slot_summary_formats_caption_and_exhaustion_message() -> Non
     assert summary == {
         "caption": "팀 슬롯: 000010 ~ 000019 · 사용 4 · 남은 슬롯 6",
         "slot_exhausted_error": "m1 슬롯이 가득 찼습니다. 다른 멤버를 선택하세요.",
+    }
+
+
+def test_sync_manage_count_state_seeds_locked_team_mode_counts() -> None:
+    session_state: dict[str, int] = {}
+
+    sync_manage_count_state(
+        session_state,
+        team_widgets_locked=True,
+        team_state={"selected_sfp_count": 7},
+        team_sc_default_count=0,
+    )
+
+    assert session_state == {
+        "mgr_sfp_count": 7,
+        "mgr_sc_count": 0,
+    }
+
+
+def test_sync_manage_count_state_initializes_solo_defaults_once() -> None:
+    session_state: dict[str, int] = {}
+
+    sync_manage_count_state(
+        session_state,
+        team_widgets_locked=False,
+        team_state=None,
+        team_sc_default_count=0,
+    )
+    sync_manage_count_state(
+        session_state,
+        team_widgets_locked=False,
+        team_state=None,
+        team_sc_default_count=0,
+    )
+
+    assert session_state == {
+        "mgr_sfp_count": 20,
+        "mgr_sc_count": 10,
+    }
+
+
+def test_sync_manage_widget_state_seeds_locked_team_preset_values() -> None:
+    session_state: dict[str, object] = {}
+
+    sync_manage_widget_state(
+        session_state,
+        team_widgets_locked=True,
+        team_state={"selected_sfp_count": 7},
+        team_sc_default_count=0,
+        nic_range=(1, 1),
+        sc_range=(1, 1),
+        target_cycling=False,
+        strategy="uniform",
+        seed=42,
+        validated_ranges=_preset().ranges,
+    )
+
+    assert session_state == {
+        "mgr_sfp_count": 7,
+        "mgr_sc_count": 0,
+        "mgr_nic_fixed": True,
+        "mgr_nic_max": 1,
+        "mgr_sc_fixed": True,
+        "mgr_sc_max": 1,
+        "mgr_target_cycling": False,
+        "mgr_param_strategy": "uniform",
+        "mgr_seed": 42,
+        "mgr_range_nic_translation_range": (-0.0215, 0.0234),
+        "mgr_range_nic_yaw_range": (-0.1745, 0.1745),
+        "mgr_range_sc_translation_range": (-0.06, 0.055),
+        "mgr_range_gripper_xy_spread": 0.002,
+        "mgr_range_gripper_z_spread": 0.002,
+        "mgr_range_gripper_rpy_spread": 0.04,
+    }
+
+
+def test_sync_manage_widget_state_initializes_solo_defaults_without_overwriting() -> None:
+    session_state: dict[str, object] = {}
+
+    sync_manage_widget_state(
+        session_state,
+        team_widgets_locked=False,
+        team_state=None,
+        team_sc_default_count=0,
+        nic_range=None,
+        sc_range=None,
+        target_cycling=None,
+        strategy=None,
+        seed=None,
+        validated_ranges=None,
+    )
+    sync_manage_widget_state(
+        session_state,
+        team_widgets_locked=False,
+        team_state=None,
+        team_sc_default_count=0,
+        nic_range=None,
+        sc_range=None,
+        target_cycling=None,
+        strategy=None,
+        seed=None,
+        validated_ranges=None,
+    )
+
+    assert session_state == {
+        "mgr_sfp_count": 20,
+        "mgr_sc_count": 10,
+        "mgr_nic_fixed": False,
+        "mgr_nic_max": 5,
+        "mgr_sc_fixed": False,
+        "mgr_sc_max": 2,
+        "mgr_target_cycling": True,
+        "mgr_param_strategy": "uniform",
+        "mgr_seed": 42,
+        "mgr_range_nic_translation_range": (-0.0215, 0.0234),
+        "mgr_range_nic_yaw_range": (-0.1745, 0.1745),
+        "mgr_range_sc_translation_range": (-0.06, 0.055),
+        "mgr_range_gripper_xy_spread": 0.002,
+        "mgr_range_gripper_z_spread": 0.002,
+        "mgr_range_gripper_rpy_spread": 0.04,
     }
 
 

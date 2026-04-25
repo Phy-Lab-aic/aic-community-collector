@@ -19,7 +19,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -109,12 +109,13 @@ from aic_collector.team_preset import (  # noqa: E402
     slot_range,
     submit_team_claim,
 )
-
-POLICIES_DIR = PROJECT_DIR / "policies"
-PIXI_POLICIES_DIR = (
-    Path.home()
-    / "ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/aic_example_policies/ros"
+from aic_collector.prefect.policy_env import (  # noqa: E402
+    AIC_SOURCE_POLICIES_DIR,
+    LOCAL_POLICIES_DIR as POLICIES_DIR,
+    PIXI_POLICIES_DIR,
+    policy_search_dirs,
 )
+
 OUTPUT_ROOT = Path.home() / "aic_community_e2e"
 
 HIDDEN_POLICIES = {
@@ -863,7 +864,7 @@ def discover_policies() -> list[str]:
     result = ["cheatcode", "hybrid", "act"]
     seen = {"CollectCheatCode", "RunACTHybrid", "RunACTv1"} | HIDDEN_POLICIES
 
-    for d in [PIXI_POLICIES_DIR, POLICIES_DIR]:
+    for d in policy_search_dirs(PROJECT_DIR):
         if not d.exists():
             continue
         for f in sorted(d.glob("*.py")):
@@ -1319,6 +1320,84 @@ def build_team_slot_summary(
     return summary
 
 
+def sync_manage_count_state(
+    session_state: MutableMapping[str, Any],
+    *,
+    team_widgets_locked: bool,
+    team_state: Mapping[str, Any] | None,
+    team_sc_default_count: int,
+) -> None:
+    if team_widgets_locked and team_state is not None:
+        session_state["mgr_sc_count"] = int(team_sc_default_count)
+        session_state["mgr_sfp_count"] = int(team_state["selected_sfp_count"])
+        return
+
+    session_state.setdefault("mgr_sfp_count", 20)
+    session_state.setdefault("mgr_sc_count", 10)
+
+
+def sync_manage_widget_state(
+    session_state: MutableMapping[str, Any],
+    *,
+    team_widgets_locked: bool,
+    team_state: Mapping[str, Any] | None,
+    team_sc_default_count: int,
+    nic_range: tuple[int, int] | None,
+    sc_range: tuple[int, int] | None,
+    target_cycling: bool | None,
+    strategy: str | None,
+    seed: int | None,
+    validated_ranges: Mapping[str, Any] | None,
+) -> None:
+    sync_manage_count_state(
+        session_state,
+        team_widgets_locked=team_widgets_locked,
+        team_state=team_state,
+        team_sc_default_count=team_sc_default_count,
+    )
+
+    if team_widgets_locked:
+        if (
+            team_state is None
+            or nic_range is None
+            or sc_range is None
+            or target_cycling is None
+            or strategy is None
+            or seed is None
+            or validated_ranges is None
+        ):
+            raise ValueError("Locked team widget state requires preset-derived values")
+
+        session_state["mgr_nic_fixed"] = nic_range[0] == nic_range[1]
+        session_state["mgr_nic_max"] = nic_range[1]
+        session_state["mgr_sc_fixed"] = sc_range[0] == sc_range[1]
+        session_state["mgr_sc_max"] = sc_range[1]
+        session_state["mgr_target_cycling"] = target_cycling
+        session_state["mgr_param_strategy"] = strategy
+        session_state["mgr_seed"] = seed
+        session_state["mgr_range_nic_translation_range"] = tuple(validated_ranges["nic_translation"])
+        session_state["mgr_range_nic_yaw_range"] = tuple(validated_ranges["nic_yaw"])
+        session_state["mgr_range_sc_translation_range"] = tuple(validated_ranges["sc_translation"])
+        session_state["mgr_range_gripper_xy_spread"] = float(validated_ranges["gripper_xy"])
+        session_state["mgr_range_gripper_z_spread"] = float(validated_ranges["gripper_z"])
+        session_state["mgr_range_gripper_rpy_spread"] = float(validated_ranges["gripper_rpy"])
+        return
+
+    session_state.setdefault("mgr_nic_fixed", False)
+    session_state.setdefault("mgr_nic_max", 5)
+    session_state.setdefault("mgr_sc_fixed", False)
+    session_state.setdefault("mgr_sc_max", 2)
+    session_state.setdefault("mgr_target_cycling", True)
+    session_state.setdefault("mgr_param_strategy", "uniform")
+    session_state.setdefault("mgr_seed", 42)
+    session_state.setdefault("mgr_range_nic_translation_range", (-0.0215, 0.0234))
+    session_state.setdefault("mgr_range_nic_yaw_range", (-0.1745, 0.1745))
+    session_state.setdefault("mgr_range_sc_translation_range", (-0.06, 0.055))
+    session_state.setdefault("mgr_range_gripper_xy_spread", 0.002)
+    session_state.setdefault("mgr_range_gripper_z_spread", 0.002)
+    session_state.setdefault("mgr_range_gripper_rpy_spread", 0.04)
+
+
 # ---------------------------------------------------------------------------
 # Config 생성
 # ---------------------------------------------------------------------------
@@ -1477,6 +1556,10 @@ if st is not None:
         team_member_lookup: dict[str, dict[str, str]] = {}
         mgr_team_member_id: str | None = None
         mgr_team_sc_default_count = 0
+        team_nic_range: tuple[int, int] | None = None
+        team_sc_range: tuple[int, int] | None = None
+        team_validated_preset_ranges: dict[str, Any] | None = None
+        team_target_cycling_flag: bool | None = None
         if team_mode_active and team_preset is not None:
             team_member_lookup = {
                 str(member["id"]): {str(k): str(v) for k, v in member.items()}
@@ -1494,6 +1577,7 @@ if st is not None:
                 try:
                     mgr_team_sc_default_count = _preset_task_count(team_preset, "sc_default_count")
                     validated_preset_ranges = build_validated_preset_ranges(team_preset)
+                    team_validated_preset_ranges = dict(validated_preset_ranges)
                     team_preview_scene_cfg = build_team_preview_scene_config(team_preset)
                     team_state = build_team_mode_state(
                         team_preset,
@@ -1514,22 +1598,12 @@ if st is not None:
                         allowed_min=1,
                         allowed_max=2,
                     )
-                    st.session_state["mgr_nic_fixed"] = nic_range[0] == nic_range[1]
-                    st.session_state["mgr_nic_max"] = nic_range[1]
-                    st.session_state["mgr_sc_fixed"] = sc_range[0] == sc_range[1]
-                    st.session_state["mgr_sc_max"] = sc_range[1]
-                    st.session_state["mgr_target_cycling"] = _preset_scene_flag(
+                    team_nic_range = nic_range
+                    team_sc_range = sc_range
+                    team_target_cycling_flag = _preset_scene_flag(
                         team_preset,
                         "target_cycling",
                     )
-                    st.session_state["mgr_param_strategy"] = str(team_preset.strategy)
-                    st.session_state["mgr_seed"] = int(team_preset.base_seed)
-                    st.session_state["mgr_sc_count"] = mgr_team_sc_default_count
-                    st.session_state["mgr_sfp_count"] = int(team_state["selected_sfp_count"])
-                    for range_key in ("nic_translation", "nic_yaw", "sc_translation"):
-                        st.session_state[f"mgr_range_{range_key}_range"] = validated_preset_ranges[range_key]
-                    for range_key in ("gripper_xy", "gripper_z", "gripper_rpy"):
-                        st.session_state[f"mgr_range_{range_key}_spread"] = validated_preset_ranges[range_key]
                 except PresetError as exc:
                     team_mode_error = exc
                     st.error(f"팀 preset 적용 실패: {team_mode_error}")
@@ -1626,34 +1700,45 @@ if st is not None:
             st.caption(team_slot_summary["caption"])
             if team_slot_summary["slot_exhausted_error"]:
                 st.error(team_slot_summary["slot_exhausted_error"])
-    
+
+        sync_manage_widget_state(
+            st.session_state,
+            team_widgets_locked=team_widgets_locked,
+            team_state=team_state,
+            team_sc_default_count=mgr_team_sc_default_count,
+            nic_range=team_nic_range,
+            sc_range=team_sc_range,
+            target_cycling=team_target_cycling_flag,
+            strategy=str(team_preset.strategy) if team_widgets_locked and team_preset is not None else None,
+            seed=int(team_preset.base_seed) if team_widgets_locked and team_preset is not None else None,
+            validated_ranges=team_validated_preset_ranges,
+        )
+
         # 기본 파라미터
         col_sfp, col_sc = st.columns(2)
         with col_sfp:
             mgr_sfp_count = st.number_input(
                 "SFP configs",
                 min_value=0,
-            max_value=int(team_state["remaining_slots"]) if team_widgets_locked and team_state is not None else 10000,
-            value=int(team_state["selected_sfp_count"]) if team_widgets_locked and team_state is not None else 20,
-            step=1 if team_widgets_locked else 10,
-            key="mgr_sfp_count",
-            disabled=bool(
-                team_widgets_locked
-                and team_state is not None
-                and int(team_state["remaining_slots"]) == 0
-            ),
-            help=(
-                "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
-                "균등 순환. 10의 배수 권장.  \n"
-                f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
-            ),
+                max_value=int(team_state["remaining_slots"]) if team_widgets_locked and team_state is not None else 10000,
+                step=1 if team_widgets_locked else 10,
+                key="mgr_sfp_count",
+                disabled=bool(
+                    team_widgets_locked
+                    and team_state is not None
+                    and int(team_state["remaining_slots"]) == 0
+                ),
+                help=(
+                    "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
+                    "균등 순환. 10의 배수 권장.  \n"
+                    f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
+                ),
             )
         with col_sc:
             mgr_sc_count = st.number_input(
                 "SC configs",
                 min_value=0,
                 max_value=10000,
-                value=mgr_team_sc_default_count if team_widgets_locked else 10,
                 step=1 if team_widgets_locked else 2,
                 key="mgr_sc_count",
                 disabled=team_widgets_locked,
@@ -1671,14 +1756,14 @@ if st is not None:
             with col_nic_fix:
                 st.markdown("###### NIC")
                 mgr_nic_fixed = st.checkbox(
-                    "고정 개수", value=False, key="mgr_nic_fixed",
+                    "고정 개수", key="mgr_nic_fixed",
                     disabled=team_widgets_locked,
                     help="on: 매 샘플 정확히 N개 / off: 1~N개 랜덤",
                 )
             with col_nic_slider:
                 mgr_nic_max = st.slider(
                     "NIC 개수 (고정)" if mgr_nic_fixed else "NIC 최대 개수 (1~N 랜덤)",
-                    min_value=1, max_value=5, value=5, step=1,
+                    min_value=1, max_value=5, step=1,
                     key="mgr_nic_max",
                     disabled=team_widgets_locked,
                     help=(
@@ -1693,14 +1778,14 @@ if st is not None:
             with col_sc_fix:
                 st.markdown("###### SC")
                 mgr_sc_fixed = st.checkbox(
-                    "고정 개수", value=False, key="mgr_sc_fixed",
+                    "고정 개수", key="mgr_sc_fixed",
                     disabled=team_widgets_locked,
                     help="on: 매 샘플 정확히 N개 / off: 1~N개 랜덤",
                 )
             with col_sc_slider:
                 mgr_sc_max = st.slider(
                     "SC 개수 (고정)" if mgr_sc_fixed else "SC 최대 개수 (1~N 랜덤)",
-                    min_value=1, max_value=2, value=2, step=1,
+                    min_value=1, max_value=2, step=1,
                     key="mgr_sc_max",
                     disabled=team_widgets_locked,
                     help=(
@@ -1712,7 +1797,6 @@ if st is not None:
     
             mgr_target_cycling = st.checkbox(
                 "Target cycling (결정적 순환으로 균등 분배)",
-                value=MGR_DEFAULT_TARGET_CYCLING,
                 key="mgr_target_cycling",
                 disabled=team_widgets_locked,
                 help=(
@@ -1725,7 +1809,6 @@ if st is not None:
     
             # 시각 다이어그램 — 현재 Scene 설정으로 샘플 3개 생성해 실제 조합을 보여줌
             # ranges는 pose 값이라 다이어그램에 무관하므로 기본값으로 생성.
-            # st.markdown(unsafe_allow_html)은 SVG를 살균 → components.v1.html 사용.
             preview_fixed_target = None
             if team_widgets_locked and team_preview_scene_cfg is not None:
                 preview_fixed_target = team_preview_scene_cfg.get("collection", {}).get("fixed_target")
@@ -1739,11 +1822,9 @@ if st is not None:
                 task_type="sfp",
                 sample_count=3,
             )
-            st.components.v1.html(
+            st.html(
                 f'<div style="display:flex;justify-content:center;padding:4px;">'
                 f'{_scene_svg}</div>',
-                height=560,
-                scrolling=True,
             )
     
         # 📏 Parameters expander — 랜덤화 범위 + 샘플링 전략
@@ -1762,7 +1843,6 @@ if st is not None:
             mgr_param_strategy = st.selectbox(
                 "샘플링 전략",
                 strategy_opts,
-                index=0,
                 key="mgr_param_strategy",
                 disabled=team_widgets_locked,
                 help=(
@@ -1775,11 +1855,9 @@ if st is not None:
             )
     
             _strategy_svg = render_sampling_strategy_svg(str(mgr_param_strategy))
-            st.components.v1.html(
+            st.html(
                 f'<div style="display:flex;justify-content:center;padding:4px;">'
                 f'{_strategy_svg}</div>',
-                height=420,
-                scrolling=False,
             )
     
             # (label, key, (aic_min, aic_max), step, format, source_url)
@@ -1804,7 +1882,6 @@ if st is not None:
                 v = st.slider(
                     label,
                     min_value=float(lo), max_value=float(hi),
-                    value=(float(lo), float(hi)),
                     step=float(step),
                     format=fmt,
                     key=f"mgr_range_{key}_range",
@@ -1818,7 +1895,6 @@ if st is not None:
                 v = st.slider(
                     label,
                     min_value=0.0, max_value=float(aic_max),
-                    value=float(aic_max),
                     step=float(step),
                     format=fmt,
                     key=f"mgr_range_{key}_spread",
@@ -1829,11 +1905,9 @@ if st is not None:
     
             # 시각 미리보기 — 선택 범위 vs AIC 최대 허용
             _params_svg = render_parameters_svg(user_ranges)
-            st.components.v1.html(
+            st.html(
                 f'<div style="display:flex;justify-content:center;padding:4px;">'
                 f'{_params_svg}</div>',
-                height=680,
-                scrolling=True,
             )
     
             # 변경 여부 판정 (모든 값이 AIC 공식 기본값=최대 범위와 같은지)
@@ -1864,7 +1938,7 @@ if st is not None:
         with st.expander("⚙️ 고급", expanded=False):
             mgr_seed = st.number_input(
                 "Seed",
-                min_value=0, value=42,
+                min_value=0,
                 key="mgr_seed",
                 disabled=team_widgets_locked,
                 help="재현용 base seed. 같은 seed + 같은 설정 → 같은 config 생성.",
@@ -2419,6 +2493,8 @@ if st is not None:
             )
             _split_active = st.session_state.get("exec_policy_split", False)
             _policy_dir_lines = [
+                f"- `{AIC_SOURCE_POLICIES_DIR}` "
+                f"({'✅ 존재' if AIC_SOURCE_POLICIES_DIR.exists() else '❌ 없음'})",
                 f"- `{PIXI_POLICIES_DIR}` "
                 f"({'✅ 존재' if PIXI_POLICIES_DIR.exists() else '❌ 없음'})",
                 f"- `{POLICIES_DIR}` "

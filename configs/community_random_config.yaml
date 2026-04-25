@@ -15,15 +15,19 @@ scoring:
         name: "/joint_states"
         type: "sensor_msgs/msg/JointState"
     - topic:
+        name: "/scoring/tf"
+        type: "tf2_msgs/msg/TFMessage"
+    - topic:
+        name: "/scoring/tf_static"
+        type: "tf2_msgs/msg/TFMessage"
+        latched: true
+    - topic:
         name: "/tf"
         type: "tf2_msgs/msg/TFMessage"
     - topic:
         name: "/tf_static"
         type: "tf2_msgs/msg/TFMessage"
         latched: true
-    - topic:
-        name: "/scoring/tf"
-        type: "tf2_msgs/msg/TFMessage"
     - topic:
         name: "/aic/gazebo/contacts/off_limit"
         type: "ros_gz_interfaces/msg/Contacts"
@@ -42,25 +46,16 @@ scoring:
     - topic:
         name: "/aic_controller/controller_state"
         type: "aic_control_interfaces/msg/ControllerState"
-    # === 카메라 토픽 — compressed (image_transport republish 경유) ===
+    # === 카메라 토픽 — raw (engine native) ===
     - topic:
-        name: "/left_camera/image/compressed"
-        type: "sensor_msgs/msg/CompressedImage"
+        name: "/left_camera/image"
+        type: "sensor_msgs/msg/Image"
     - topic:
-        name: "/center_camera/image/compressed"
-        type: "sensor_msgs/msg/CompressedImage"
+        name: "/center_camera/image"
+        type: "sensor_msgs/msg/Image"
     - topic:
-        name: "/right_camera/image/compressed"
-        type: "sensor_msgs/msg/CompressedImage"
-    - topic:
-        name: "/left_camera/camera_info"
-        type: "sensor_msgs/msg/CameraInfo"
-    - topic:
-        name: "/center_camera/camera_info"
-        type: "sensor_msgs/msg/CameraInfo"
-    - topic:
-        name: "/right_camera/camera_info"
-        type: "sensor_msgs/msg/CameraInfo"
+        name: "/right_camera/image"
+        type: "sensor_msgs/msg/Image"
 
 task_board_limits:
   nic_rail:

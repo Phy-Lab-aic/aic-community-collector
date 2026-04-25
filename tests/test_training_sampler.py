@@ -224,6 +224,18 @@ def test_build_sc_config_target_module() -> None:
         assert cfg["trials"]["trial_1"]["scene"]["task_board"]["pose"]["yaw"] == 3.0
 
 
+def test_build_config_scoring_topics_include_tf_streams() -> None:
+    sample = sample_training_configs({}, "sfp", 1, 42)[0]
+    cfg = build_training_config(sample, TEMPLATE_PATH)
+    topics = cfg["scoring"]["topics"]
+    topic_names = {entry["topic"]["name"] for entry in topics}
+
+    assert "/scoring/tf" in topic_names
+    assert "/scoring/tf_static" in topic_names
+    assert "/tf" in topic_names
+    assert "/tf_static" in topic_names
+
+
 # ---------------------------------------------------------------------------
 # Builder: 출력 / 번호 관리
 # ---------------------------------------------------------------------------
