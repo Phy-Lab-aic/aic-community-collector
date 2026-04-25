@@ -233,9 +233,13 @@ def _validate_scene(value: Any) -> dict[str, Any]:
     scene = _validate_mapping(value, "scene")
     fixed_target = scene.get("fixed_target")
     target_cycling = scene.get("target_cycling", True)
-    if fixed_target in (None, {}) and target_cycling is False:
+    has_concrete_target = isinstance(fixed_target, dict) and any(
+        v is not None for v in fixed_target.values()
+    )
+    if not has_concrete_target and target_cycling is False:
         raise PresetError(
-            "scene.target_cycling must be true when scene.fixed_target is unset"
+            "scene.target_cycling must be true when scene.fixed_target "
+            "has no concrete (rail, port) entries"
         )
     return scene
 

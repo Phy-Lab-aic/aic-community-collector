@@ -781,6 +781,56 @@ members:
         load_preset(path)
 
 
+def test_load_preset_rejects_target_cycling_false_with_all_null_fixed_target(tmp_path: Path) -> None:
+    """fixed_target present but every task is null is operationally identical to unset."""
+    path = _write_preset(
+        tmp_path / "preset.yaml",
+        """
+team: {base_seed: 1, shard_stride: 10, index_width: 4}
+sampling:
+  strategy: uniform
+  ranges:
+    nic_translation: [-0.01, 0.01]
+scene:
+  nic_count_range: [1, 1]
+  sc_count_range:  [1, 1]
+  target_cycling:  false
+  fixed_target:
+    sfp: null
+    sc: null
+tasks: {sfp_default_count: 1, sc_default_count: 0}
+members:
+  - {id: M0, name: alice}
+""".strip(),
+    )
+    with pytest.raises(PresetError, match="scene.target_cycling"):
+        load_preset(path)
+
+
+def test_load_preset_rejects_target_cycling_false_with_explicit_null_fixed_target(tmp_path: Path) -> None:
+    """`fixed_target: null` must be treated the same as a missing key."""
+    path = _write_preset(
+        tmp_path / "preset.yaml",
+        """
+team: {base_seed: 1, shard_stride: 10, index_width: 4}
+sampling:
+  strategy: uniform
+  ranges:
+    nic_translation: [-0.01, 0.01]
+scene:
+  nic_count_range: [1, 1]
+  sc_count_range:  [1, 1]
+  target_cycling:  false
+  fixed_target:    null
+tasks: {sfp_default_count: 1, sc_default_count: 0}
+members:
+  - {id: M0, name: alice}
+""".strip(),
+    )
+    with pytest.raises(PresetError, match="scene.target_cycling"):
+        load_preset(path)
+
+
 def test_load_preset_allows_target_cycling_false_when_fixed_target_present(tmp_path: Path) -> None:
     path = _write_preset(
         tmp_path / "preset.yaml",
