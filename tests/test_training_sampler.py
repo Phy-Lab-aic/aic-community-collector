@@ -293,12 +293,6 @@ def test_strategy_invalid_raises() -> None:
 
 def test_target_cycling_distributes_uniformly_across_10_targets() -> None:
     """1000 SFP samples with target_cycling=True hit every (rail, port) 100 times."""
-    import pytest
-
-    try:
-        from scipy.stats import qmc  # noqa: F401
-    except (ImportError, ValueError) as exc:
-        pytest.skip(f"scipy.stats.qmc unavailable: {exc}")
     cfg = {
         "scene": {
             "nic_count_range": [1, 1],
@@ -306,9 +300,9 @@ def test_target_cycling_distributes_uniformly_across_10_targets() -> None:
             "target_cycling":  True,
         },
         "ranges": {},
-        "param_strategy": "lhs",
+        "param_strategy": "uniform",  # cycling logic is strategy-independent; uniform avoids scipy
     }
-    samples = sample_training_configs(cfg, "sfp", count=1000, seed=42, strategy="lhs")
+    samples = sample_training_configs(cfg, "sfp", count=1000, seed=42, strategy="uniform")
     counts: dict[tuple[int, str], int] = {}
     for s in samples:
         key = (s.target_rail, s.target_port_name)
@@ -323,8 +317,13 @@ def test_lhs_pose_marginal_has_no_empty_bin() -> None:
 
     try:
         from scipy.stats import qmc  # noqa: F401
-    except (ImportError, ValueError) as exc:
+    except ImportError as exc:
         pytest.skip(f"scipy.stats.qmc unavailable: {exc}")
+    except ValueError as exc:
+        msg = str(exc).lower()
+        if "_ckdtree" in msg or "numpy" in msg or "dtype size changed" in msg:
+            pytest.skip(f"scipy/numpy ABI mismatch: {exc}")
+        raise
     cfg = {
         "scene": {
             "nic_count_range": [1, 1],
