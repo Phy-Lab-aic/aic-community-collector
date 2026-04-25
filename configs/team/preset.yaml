@@ -24,14 +24,14 @@ tasks:
   sc_default_count: 100
 members:
   - id: M0
-    name: alice
+    name: 한준모
   - id: M1
-    name: bob
+    name: 전유진
   - id: M2
-    name: carol
+    name: 이진형
   - id: M3
-    name: dave
+    name: 정혜린
   - id: M4
-    name: eve
+    name: 엄창용
   - id: M5
-    name: frank
+    name: 이강인
