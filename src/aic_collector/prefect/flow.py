@@ -16,7 +16,12 @@ from aic_collector.build_engine_config import build as build_engine_cfg
 from aic_collector.postprocess_run import process_run
 from aic_collector.sampler import sample_parameters
 
-from .policy_env import POLICY_CLASS, build_policy_env, deploy_policies
+from .policy_env import (
+    POLICY_CLASS,
+    build_policy_env,
+    build_policy_pythonpath,
+    deploy_policies,
+)
 from .shell_runner import (
     graceful_cleanup,
     run_process_background,
@@ -56,6 +61,9 @@ def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["DBX_CONTAINER_MANAGER"] = "docker"
     env["PATH"] = str(Path.home() / ".pixi/bin") + ":" + env.get("PATH", "")
+    policy_pythonpath = build_policy_pythonpath(env.get("PYTHONPATH"))
+    if policy_pythonpath:
+        env["PYTHONPATH"] = policy_pythonpath
     return env
 
 
