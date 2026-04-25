@@ -1228,12 +1228,11 @@ def build_team_preview_scene_config(preset: TeamPreset) -> dict[str, Any]:
 
 
 def _require_sfp_only_team_mode_tasks(preset: TeamPreset) -> int:
+    # NOTE: name is historical — guard now permits sc_default_count > 0.
+    # _preset_task_count enforces non-negative on both fields; SFP-only
+    # enforcement lives in the UI submit path, not here.
     default_sfp_count = _preset_task_count(preset, "sfp_default_count")
-    if default_sfp_count < 0:
-        raise PresetError("Invalid team preset task count: tasks.sfp_default_count must be non-negative")
-    sc_default_count = _preset_task_count(preset, "sc_default_count")
-    if sc_default_count < 0:
-        raise PresetError("Invalid team preset task count: tasks.sc_default_count must be non-negative")
+    _preset_task_count(preset, "sc_default_count")  # validate shape only
     return default_sfp_count
 
 
