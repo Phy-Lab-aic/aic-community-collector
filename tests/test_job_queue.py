@@ -25,9 +25,7 @@ from aic_collector.job_queue import (  # noqa: E402
     TASK_TYPES,
     all_counts,
     ensure_queue_dirs,
-    legacy_dir,
     list_configs,
-    list_legacy,
     migrate_legacy_to_pending,
     next_sample_index,
     queue_counts,
@@ -128,11 +126,11 @@ def test_list_configs_sorted() -> None:
         write_plans(plans, root, TEMPLATE_PATH)
         files = list_configs(root, "sfp", QueueState.PENDING)
         assert [f.name for f in files] == [
-            "config_sfp_0000.yaml",
-            "config_sfp_0001.yaml",
-            "config_sfp_0002.yaml",
-            "config_sfp_0003.yaml",
-            "config_sfp_0004.yaml",
+            "config_sfp_000000.yaml",
+            "config_sfp_000001.yaml",
+            "config_sfp_000002.yaml",
+            "config_sfp_000003.yaml",
+            "config_sfp_000004.yaml",
         ]
 
 
@@ -148,7 +146,7 @@ def test_write_plan_creates_pending_file() -> None:
         path = write_plan(plans[0], root, TEMPLATE_PATH)
         assert path.exists()
         assert path.parent == root / "sfp" / "pending"
-        assert path.name == "config_sfp_0000.yaml"
+        assert path.name == "config_sfp_000000.yaml"
 
 
 def test_write_plan_sc_task_type_routes_correctly() -> None:
@@ -157,7 +155,26 @@ def test_write_plan_sc_task_type_routes_correctly() -> None:
         plans = sample_scenes({}, "sc", 1, 42)
         path = write_plan(plans[0], root, TEMPLATE_PATH)
         assert path.parent == root / "sc" / "pending"
-        assert path.name == "config_sc_0000.yaml"
+        assert path.name == "config_sc_000000.yaml"
+
+
+def test_write_plan_explicit_index_width_is_preserved() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        plans = sample_scenes({}, "sfp", 1, 42, start_index=50)
+        path = write_plan(plans[0], root, TEMPLATE_PATH, index_width=4)
+        assert path.name == "config_sfp_0050.yaml"
+
+
+def test_write_plans_explicit_index_width_is_preserved() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        plans = sample_scenes({}, "sfp", 2, 42, start_index=50)
+        paths = write_plans(plans, root, TEMPLATE_PATH, index_width=4)
+        assert [p.name for p in paths] == [
+            "config_sfp_0050.yaml",
+            "config_sfp_0051.yaml",
+        ]
 
 
 def test_next_index_empty_returns_zero() -> None:
@@ -193,6 +210,15 @@ def test_next_index_includes_legacy() -> None:
         (flat / "config_sfp_0054.yaml").write_text("dummy")
         # pending은 비어있지만 legacy=54 → 다음은 55
         assert next_sample_index(root, "sfp") == 55
+
+
+def test_next_index_mixed_widths_returns_next_numeric_index() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        ensure_queue_dirs(root)
+        (root / "sfp" / "pending" / "config_sfp_0050.yaml").write_text("x")
+        (root / "sfp" / "done" / "config_sfp_200000.yaml").write_text("x")
+        assert next_sample_index(root, "sfp") == 200001
 
 
 def test_next_index_skips_unrelated_files() -> None:
@@ -254,9 +280,9 @@ def test_write_plans_multiple_uses_plan_indices() -> None:
         paths = write_plans(plans, root, TEMPLATE_PATH)
         names = [p.name for p in paths]
         assert names == [
-            "config_sfp_0005.yaml",
-            "config_sfp_0006.yaml",
-            "config_sfp_0007.yaml",
+            "config_sfp_000005.yaml",
+            "config_sfp_000006.yaml",
+            "config_sfp_000007.yaml",
         ]
 
 
@@ -277,10 +303,13 @@ def main() -> int:
         ("state: list_configs 정렬", test_list_configs_sorted),
         ("writer: write_plan pending 경로", test_write_plan_creates_pending_file),
         ("writer: SC task_type 라우팅", test_write_plan_sc_task_type_routes_correctly),
+        ("writer: write_plan explicit width", test_write_plan_explicit_index_width_is_preserved),
+        ("writer: write_plans explicit width", test_write_plans_explicit_index_width_is_preserved),
         ("writer: next_index 빈 root=0", test_next_index_empty_returns_zero),
         ("writer: next_index pending 반영", test_next_index_after_pending_writes),
         ("writer: next_index 모든 상태 스캔", test_next_index_counts_all_states),
         ("writer: next_index legacy 포함", test_next_index_includes_legacy),
+        ("writer: next_index mixed width", test_next_index_mixed_widths_returns_next_numeric_index),
         ("writer: next_index task_type 격리", test_next_index_skips_unrelated_files),
         ("writer: write_plans 인덱스 보존", test_write_plans_multiple_uses_plan_indices),
         ("writer: migrate_legacy 이동", test_migrate_legacy_to_pending_moves_and_counts),

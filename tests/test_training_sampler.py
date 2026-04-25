@@ -23,12 +23,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-from aic_collector.sampler import (  # noqa: E402
-    SC_TARGET_CYCLE,
-    SFP_TARGET_CYCLE,
-    TrainingSample,
-    sample_training_configs,
-)
+from aic_collector.sampler import sample_training_configs  # noqa: E402
 from aic_collector.build_training_config import (  # noqa: E402
     build_training_config,
     next_config_index,
@@ -79,6 +74,42 @@ def test_sfp_target_cycling_20samples() -> None:
     assert len(targets) == 10, f"10종이 아니라 {len(targets)}종 등장"
     for key, count in targets.items():
         assert count == 2, f"{key} 균등성 위반: {count}회"
+
+
+def test_fixed_target_sfp_forces_same_target() -> None:
+    """collection.fixed_target가 있으면 SFP target은 항상 그 값이어야 한다."""
+    training_cfg = {
+        "collection": {
+            "seed": 42,
+            "fixed_target": {"sfp": {"rail": 0, "port": "sfp_port_0"}},
+        }
+    }
+    samples = sample_training_configs(training_cfg, "sfp", 8, 42)
+    assert {(s.target_rail, s.target_port_name) for s in samples} == {(0, "sfp_port_0")}
+
+
+def test_collection_without_fixed_target_preserves_default_sfp_cycling() -> None:
+    """fixed_target가 없으면 collection 블록이 있어도 기존 SFP 순환이 유지돼야 한다."""
+    training_cfg = {"collection": {"seed": 42}}
+    samples = sample_training_configs(training_cfg, "sfp", 20, 42)
+    targets = Counter((s.target_rail, s.target_port_name) for s in samples)
+    assert len(targets) == 10, f"10종이 아니라 {len(targets)}종 등장"
+    for key, count in targets.items():
+        assert count == 2, f"{key} 균등성 위반: {count}회"
+
+
+def test_fixed_target_does_not_change_seed_sequence() -> None:
+    """fixed_target 유무는 per-sample seed sequence를 바꾸면 안 된다."""
+    base_cfg = {"collection": {"seed": 42}}
+    fixed_cfg = {
+        "collection": {
+            "seed": 42,
+            "fixed_target": {"sfp": {"rail": 0, "port": "sfp_port_0"}},
+        }
+    }
+    base_samples = sample_training_configs(base_cfg, "sfp", 8, 42)
+    fixed_samples = sample_training_configs(fixed_cfg, "sfp", 8, 42)
+    assert [s.seed for s in fixed_samples] == [s.seed for s in base_samples]
 
 
 def test_sc_target_cycling_10samples() -> None:
@@ -260,6 +291,83 @@ def test_strategy_invalid_raises() -> None:
     raise AssertionError("bogus strategy에서 ValueError 안 남")
 
 
+def test_target_cycling_distributes_uniformly_across_10_targets() -> None:
+    """1000 SFP samples with target_cycling=True hit every (rail, port) 100 times."""
+    cfg = {
+        "scene": {
+            "nic_count_range": [1, 1],
+            "sc_count_range":  [1, 1],
+            "target_cycling":  True,
+        },
+        "ranges": {},
+        "param_strategy": "uniform",  # cycling logic is strategy-independent; uniform avoids scipy
+    }
+    samples = sample_training_configs(cfg, "sfp", count=1000, seed=42, strategy="uniform")
+    counts: dict[tuple[int, str], int] = {}
+    for s in samples:
+        key = (s.target_rail, s.target_port_name)
+        counts[key] = counts.get(key, 0) + 1
+    assert len(counts) == 10
+    assert all(v == 100 for v in counts.values()), counts
+
+
+def test_lhs_pose_marginal_has_no_empty_bin() -> None:
+    """LHS guarantees every dimension's 10-bin histogram is non-empty for n>=10."""
+    import pytest
+
+    try:
+        from scipy.stats import qmc  # noqa: F401
+    except ImportError as exc:
+        pytest.skip(f"scipy.stats.qmc unavailable: {exc}")
+    except ValueError as exc:
+        msg = str(exc).lower()
+        if "_ckdtree" in msg or "numpy" in msg or "dtype size changed" in msg:
+            pytest.skip(f"scipy/numpy ABI mismatch: {exc}")
+        raise
+    cfg = {
+        "scene": {
+            "nic_count_range": [1, 1],
+            "sc_count_range":  [1, 1],
+            "target_cycling":  True,
+        },
+        "ranges": {
+            "nic_translation": [-0.0215, 0.0234],
+            "nic_yaw":         [-0.1745, 0.1745],
+            "sc_translation":  [-0.06, 0.055],
+            "gripper_xy": 0.002,
+            "gripper_z":  0.002,
+            "gripper_rpy": 0.04,
+        },
+        "param_strategy": "lhs",
+    }
+    samples = sample_training_configs(cfg, "sfp", count=100, seed=42, strategy="lhs")
+    # Pull nic translation from the active rail of each sample.
+    nic_values = [next(iter(s.nic_poses.values()))["translation"] for s in samples]
+    bins = [0] * 10
+    lo, hi = -0.0215, 0.0234
+    for v in nic_values:
+        # clamp to [lo, hi) defensively, then bucket into 10 bins.
+        idx = min(9, max(0, int((v - lo) / (hi - lo) * 10)))
+        bins[idx] += 1
+    assert all(b > 0 for b in bins), bins
+
+
+def test_fixed_target_legacy_path_unchanged_regression() -> None:
+    """Sanity: fixed_target still collapses to a single (rail, port)."""
+    cfg = {
+        "scene": {
+            "nic_count_range": [1, 1],
+            "sc_count_range":  [1, 1],
+            "target_cycling":  False,
+        },
+        "ranges": {},
+        "collection": {"fixed_target": {"sfp": {"rail": 2, "port": "sfp_port_1"}}},
+        "param_strategy": "uniform",
+    }
+    samples = sample_training_configs(cfg, "sfp", count=20, seed=42, strategy="uniform")
+    assert all(s.target_rail == 2 and s.target_port_name == "sfp_port_1" for s in samples)
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -271,6 +379,9 @@ def main() -> int:
         ("재현성: 다른 seed → 다른 출력", test_different_seeds_differ),
         ("재현성: start_index 연속성", test_start_index_continuity),
         ("순환: SFP 20샘플 균등", test_sfp_target_cycling_20samples),
+        ("순환: fixed SFP target", test_fixed_target_sfp_forces_same_target),
+        ("순환: collection without fixed target", test_collection_without_fixed_target_preserves_default_sfp_cycling),
+        ("순환: fixed target seed sequence", test_fixed_target_does_not_change_seed_sequence),
         ("순환: SC 10샘플 균등", test_sc_target_cycling_10samples),
         ("순환: target rail 포함 보장", test_target_rail_included_in_active_rails),
         ("범위: NIC rail 개수/비복원", test_nic_rail_count_range),

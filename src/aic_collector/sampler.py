@@ -28,7 +28,7 @@ import json
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 try:
     import numpy as np
@@ -41,6 +41,9 @@ try:
 except ImportError:
     sys.stderr.write("pyyaml 필요: pip install pyyaml\n")
     sys.exit(1)
+
+if TYPE_CHECKING:
+    from aic_collector.scene_plan import ScenePlan
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +385,7 @@ def sample_training_configs(
     scene_cfg = training_cfg.get("scene", {}) or {}
     ranges_cfg = training_cfg.get("ranges", {}) or {}
     gripper_nominal_cfg = training_cfg.get("gripper_nominal", {}) or GRIPPER_NOMINAL_DEFAULT
+    collection_cfg = training_cfg.get("collection", {}) or {}
     nominal = gripper_nominal_cfg.get(task_type, GRIPPER_NOMINAL_DEFAULT[task_type])
 
     nic_count_range = scene_cfg.get("nic_count_range", [1, 5])
@@ -395,9 +399,12 @@ def sample_training_configs(
     g_z = _resolve_scalar(ranges_cfg, "gripper_z")
     g_rpy = _resolve_scalar(ranges_cfg, "gripper_rpy")
 
-    cycle = SFP_TARGET_CYCLE if task_type == "sfp" else SC_TARGET_CYCLE
-    max_rails = 5 if task_type == "sfp" else 2
-
+    fixed_target = (collection_cfg.get("fixed_target", {}) or {}).get(task_type)
+    cycle = (
+        [(int(fixed_target["rail"]), str(fixed_target["port"]))]
+        if fixed_target is not None
+        else (SFP_TARGET_CYCLE if task_type == "sfp" else SC_TARGET_CYCLE)
+    )
     # pose 설계행렬 (lhs 전용). uniform은 per-sample rng로 그때그때 추첨.
     design: np.ndarray | None = None
     if strategy == "lhs" and count > 0:
@@ -516,7 +523,7 @@ def sample_training_configs(
 # 지원하며, =3은 Phase 2+에서 추가된다.
 
 
-def training_sample_to_scene_plan(s: "TrainingSample") -> "ScenePlan":
+def training_sample_to_scene_plan(s: TrainingSample) -> ScenePlan:
     """TrainingSample → ScenePlan (1-trial) 변환.
 
     내부에서 scene_plan을 import (순환 import 회피용 lazy import 불필요 —
@@ -548,7 +555,7 @@ def sample_scenes(
     seed: int,
     start_index: int = 0,
     trials_per_config: int = 1,
-) -> list["ScenePlan"]:
+) -> list[ScenePlan]:
     """통합 샘플링 — ScenePlan 리스트 반환.
 
     Phase 1: trials_per_config=1만 지원. 내부적으로 sample_training_configs를

@@ -49,6 +49,15 @@ def main() -> int:
         "--run-tag", default=None,
         help="run_dir 접미 태그 (기본: 타임스탬프)",
     )
+    parser.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "엔진 GUI 비표시 모드 (Gazebo 창 + RViz 끄기). "
+            "기본 GUI 표시. 대량 수집 시 --headless 권장."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -71,6 +80,7 @@ def main() -> int:
             use_compressed=args.use_compressed,
             collect_episode=args.collect_episode,
             output_root=args.output_root,
+            headless=args.headless,
         )
         return 0 if result.get("success", False) else 1
 
@@ -83,6 +93,7 @@ def main() -> int:
         seed_override=args.seed,
         do_deploy=not args.no_deploy,
         dry_run=args.dry_run,
+        headless=args.headless,
     )
 
     if result.get("dry_run"):

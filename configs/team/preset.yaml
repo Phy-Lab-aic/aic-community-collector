@@ -1,0 +1,37 @@
+# Team-wide preset for blindspot-fix collection round (2026-04-26).
+# Edits are changes to the team contract - open a PR.
+
+version: 1
+team:
+  base_seed: 42
+  shard_stride: 100000
+  index_width: 6
+sampling:
+  strategy: lhs
+  ranges:
+    nic_translation: [-0.0215, 0.0234]
+    nic_yaw: [-0.1745, 0.1745]
+    sc_translation: [-0.06, 0.055]
+    gripper_xy: 0.002
+    gripper_z: 0.002
+    gripper_rpy: 0.04
+scene:
+  nic_count_range: [1, 1]
+  sc_count_range: [1, 1]
+  target_cycling: true
+tasks:
+  sfp_default_count: 1000
+  sc_default_count: 100
+members:
+  - id: M0
+    name: 한준모
+  - id: M1
+    name: 전유진
+  - id: M2
+    name: 이진형
+  - id: M3
+    name: 정혜린
+  - id: M4
+    name: 엄창용
+  - id: M5
+    name: 이강인

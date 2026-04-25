@@ -169,6 +169,17 @@ configs/train/
 2. `aic_model.policy.Policy`를 상속받고 `insert_cable()` 함수 구현
 3. 작업 실행 탭 드롭다운에서 자동으로 선택 가능!
 
+### Team Mode
+
+`configs/team/preset.yaml` 파일이 있으면 **작업 관리 탭**이 자동으로 team mode로 바뀝니다.
+
+- `Member` 선택기를 먼저 고릅니다.
+- `start_index`, scene 설정, randomization 파라미터는 preset에서 내려오며 team mode에서는 잠깁니다.
+- team mode는 현재 **SFP config 생성만 지원**합니다. `SFP configs` 수량을 정한 뒤 `📁 큐에 추가 (...)` 버튼을 누르면 됩니다. `SC configs` 생성은 team mode에서 지원하지 않습니다.
+- `큐 루트`는 각 사용자의 **로컬 출력 위치**만 정합니다. 슬롯 예약은 로컬 queue root와 무관하게 전역 `configs/team/seed_ledger.yaml` 기준으로 처리됩니다.
+- 각 submit은 `configs/team/seed_ledger.yaml`에 claim을 추가합니다.
+- solo mode로 돌아가려면 `configs/team/preset.yaml`을 이름 변경하거나 삭제하면 됩니다.
+
 ---
 
 ## 3. 작업 실행 탭 — 요리사가 주문 처리
@@ -299,7 +310,7 @@ uv run aic-collector-worker --root configs/train \
 
 ```bash
 uv run aic-prefect-run \
-    --engine-config configs/train/sfp/pending/config_sfp_0050.yaml \
+    --engine-config configs/train/sfp/pending/config_sfp_000050.yaml \
     --policy cheatcode --output-root ~/aic_data
 ```
 

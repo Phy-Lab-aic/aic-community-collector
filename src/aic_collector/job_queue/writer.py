@@ -1,7 +1,7 @@
 """
 Producer — ScenePlan을 YAML로 직렬화해서 pending/에 기록.
 
-파일명 규약: `config_{task_type}_{sample_index:04d}.yaml`
+파일명 규약: `config_{task_type}_{sample_index:06d}.yaml`
 append 모드를 위해 `next_sample_index()`가 모든 상태 디렉토리(+legacy)를
 훑어서 번호 충돌을 방지한다.
 """
@@ -27,7 +27,7 @@ def write_plan(
     plan: ScenePlan,
     root: Path,
     template_path: Path,
-    index_width: int = 4,
+    index_width: int = 6,
 ) -> Path:
     """ScenePlan 1개를 pending/에 기록하고 경로 반환.
 
@@ -47,7 +47,7 @@ def write_plans(
     plans: list[ScenePlan],
     root: Path,
     template_path: Path,
-    index_width: int = 4,
+    index_width: int = 6,
 ) -> list[Path]:
     """여러 ScenePlan을 pending/에 일괄 기록."""
     return [write_plan(p, root, template_path, index_width) for p in plans]
@@ -56,11 +56,11 @@ def write_plans(
 def next_sample_index(
     root: Path,
     task_type: str,
-    index_width: int = 4,
+    index_width: int = 6,
 ) -> int:
     """기존 큐(모든 상태 + legacy)를 훑어 다음 sample_index 반환.
 
-    `config_{task_type}_NNNN.yaml` 중 최대 NNNN + 1. 하나도 없으면 0.
+    `config_{task_type}_NNNNNN.yaml` 중 최대 NNNNNN + 1. 하나도 없으면 0.
     append 모드에서 번호 충돌을 막는다.
     """
     pattern = re.compile(rf"^config_{re.escape(task_type)}_(\d+)\.yaml$")
