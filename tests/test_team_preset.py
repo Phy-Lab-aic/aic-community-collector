@@ -17,6 +17,8 @@ from aic_collector.team_preset import (  # noqa: E402
     PresetError,
     SlotExhausted,
     TeamPreset,
+    _enforce_repro_gates,
+    _env_flag,
     adjust_claim_count,
     append_claim,
     load_preset,
@@ -876,3 +878,103 @@ members:
     )
     preset = load_preset(path)
     assert preset is not None
+
+
+def test_env_flag_truthy_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    for value in ("1", "true", "TRUE", "yes", "Yes"):
+        monkeypatch.setenv("AIC_TEST_FLAG", value)
+        assert _env_flag("AIC_TEST_FLAG") is True
+
+
+def test_env_flag_falsy_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    for value in ("", "0", "false", "no", "off"):
+        monkeypatch.setenv("AIC_TEST_FLAG", value)
+        assert _env_flag("AIC_TEST_FLAG") is False
+    monkeypatch.delenv("AIC_TEST_FLAG", raising=False)
+    assert _env_flag("AIC_TEST_FLAG") is False
+
+
+def test_enforce_repro_gates_rejects_dirty_sha(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AIC_ALLOW_DIRTY", raising=False)
+    with pytest.raises(PresetError, match="dirty tree"):
+        _enforce_repro_gates(
+            entries=[],
+            task_type="sfp",
+            preset_hash="sha256:abc",
+            git_sha="dirty:abcdef",
+        )
+
+
+def test_enforce_repro_gates_allows_dirty_with_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIC_ALLOW_DIRTY", "1")
+    _enforce_repro_gates(
+        entries=[],
+        task_type="sfp",
+        preset_hash="sha256:abc",
+        git_sha="dirty:abcdef",
+    )
+
+
+def test_enforce_repro_gates_passes_clean_sha(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AIC_ALLOW_DIRTY", raising=False)
+    _enforce_repro_gates(
+        entries=[],
+        task_type="sfp",
+        preset_hash="sha256:abc",
+        git_sha="abcdef",
+    )
+
+
+def test_enforce_repro_gates_allows_uncommitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AIC_ALLOW_DIRTY", raising=False)
+    _enforce_repro_gates(
+        entries=[],
+        task_type="sfp",
+        preset_hash="sha256:abc",
+        git_sha="uncommitted",
+    )
+
+
+def test_enforce_repro_gates_rejects_preset_hash_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AIC_ALLOW_PRESET_DRIFT", raising=False)
+    entries = [{"task_type": "sfp", "preset_hash": "sha256:old"}]
+    with pytest.raises(PresetError, match="preset_hash drift"):
+        _enforce_repro_gates(
+            entries=entries,
+            task_type="sfp",
+            preset_hash="sha256:new",
+            git_sha="abcdef",
+        )
+
+
+def test_enforce_repro_gates_allows_drift_with_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AIC_ALLOW_PRESET_DRIFT", "1")
+    entries = [{"task_type": "sfp", "preset_hash": "sha256:old"}]
+    _enforce_repro_gates(
+        entries=entries,
+        task_type="sfp",
+        preset_hash="sha256:new",
+        git_sha="abcdef",
+    )
+
+
+def test_enforce_repro_gates_drift_isolated_per_task_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AIC_ALLOW_PRESET_DRIFT", raising=False)
+    entries = [{"task_type": "sfp", "preset_hash": "sha256:sfphash"}]
+    # SC submission with different hash should pass — drift is checked per task_type.
+    _enforce_repro_gates(
+        entries=entries,
+        task_type="sc",
+        preset_hash="sha256:schash",
+        git_sha="abcdef",
+    )
+
+
+def test_enforce_repro_gates_first_submit_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AIC_ALLOW_PRESET_DRIFT", raising=False)
+    _enforce_repro_gates(
+        entries=[],
+        task_type="sfp",
+        preset_hash="sha256:any",
+        git_sha="abcdef",
+    )

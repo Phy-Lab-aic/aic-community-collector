@@ -97,6 +97,44 @@ def _iso_utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _env_flag(name: str) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    return raw in {"1", "true", "yes"}
+
+
+def _enforce_repro_gates(
+    entries: list[dict[str, Any]],
+    *,
+    task_type: str,
+    preset_hash: str,
+    git_sha: str,
+) -> None:
+    """Refuse non-reproducible submits.
+
+    `dirty:<sha>` => raises unless AIC_ALLOW_DIRTY env flag is truthy.
+    `uncommitted` (no git checkout) is permitted — the 2026-04-20 spec
+    explicitly supports it for wheel installs.
+
+    preset_hash drift vs. the most recent same-task_type entry => raises
+    unless AIC_ALLOW_PRESET_DRIFT env flag is truthy. First-ever submit
+    has no prior entry to compare against, so it passes.
+    """
+    if git_sha.startswith("dirty:") and not _env_flag("AIC_ALLOW_DIRTY"):
+        raise PresetError(
+            "Refusing to submit on a dirty tree. Commit or stash, "
+            "or set AIC_ALLOW_DIRTY=1 to override."
+        )
+    same_task = [e for e in entries if e.get("task_type") == task_type]
+    if same_task:
+        prior_hash = same_task[-1].get("preset_hash")
+        if prior_hash != preset_hash and not _env_flag("AIC_ALLOW_PRESET_DRIFT"):
+            raise PresetError(
+                f"preset_hash drift vs latest {task_type} entry "
+                f"({prior_hash!r} -> {preset_hash!r}). "
+                "Set AIC_ALLOW_PRESET_DRIFT=1 to override."
+            )
+
+
 def _git_sha() -> str:
     repo_root = Path(__file__).resolve().parent.parent.parent
     try:
