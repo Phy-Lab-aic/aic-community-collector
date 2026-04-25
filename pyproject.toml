@@ -22,6 +22,22 @@ aic-collector-worker = "aic_collector.job_queue.consumer_cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/aic_collector"]
 
+[tool.pytest.ini_options]
+addopts = [
+    "-p", "no:launch_ros",
+    "-p", "no:launch_testing",
+    "-p", "no:ament_lint",
+    "-p", "no:ament_xmllint",
+    "-p", "no:ament_flake8",
+    "-p", "no:ament_copyright",
+    "-p", "no:ament_pep257",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
