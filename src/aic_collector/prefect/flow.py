@@ -213,8 +213,10 @@ def restart_docker_task(container: str = "aic_eval") -> None:
         READY_FLAG.unlink(missing_ok=True)
         DONE_FLAG.unlink(missing_ok=True)
         if ENGINE_RESULTS.exists():
-            backup = ENGINE_RESULTS.parent / f"aic_results_e2e_backup_{int(time.time())}"
-            shutil.move(str(ENGINE_RESULTS), str(backup))
+            if ENGINE_RESULTS.is_dir():
+                shutil.rmtree(ENGINE_RESULTS)
+            else:
+                ENGINE_RESULTS.unlink()
 
         print("[engine] 컨테이너 재시작...")
         run_shell_process(
