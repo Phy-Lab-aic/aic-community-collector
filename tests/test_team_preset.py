@@ -1235,11 +1235,30 @@ def test_cli_submit_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_cli_submit_prints_friendly_error_on_preset_error(tmp_path: Path) -> None:
     preset, queue_root, ledger_path, template_path = _make_submit_fixture(tmp_path)
-    # No AIC_ALLOW_DIRTY → dirty gate fires inside submit_team_claim.
-    # The CLI must print a friendly [error] line and return non-zero, not raise.
+    # Pre-seed the ledger with a DIFFERENT preset_hash so the drift gate fires
+    # inside submit_team_claim. This is independent of the actual git tree
+    # state, so the test runs reliably whether the repo is clean or dirty.
+    seeded = [
+        {
+            "member_id": "M0",
+            "task_type": "sfp",
+            "base_seed": preset.base_seed,
+            "start_index": 0,
+            "count": 0,
+            "strategy": preset.strategy,
+            "queue_root": str(queue_root),
+            "preset_hash": "sha256:olddifferent",
+            "git_sha": "cleanabc",
+            "created_at": "2026-04-20T00:00:00Z",
+        }
+    ]
+    yaml.safe_dump({"entries": seeded}, ledger_path.open("w"), sort_keys=False)
+
+    # Allow dirty so only the drift gate fires (not the dirty gate).
     env = {
         "PYTHONPATH": str(PROJECT_DIR / "src"),
         "PATH": os.environ.get("PATH", ""),
+        "AIC_ALLOW_DIRTY": "1",
     }
     result = subprocess.run(
         [
@@ -1248,7 +1267,7 @@ def test_cli_submit_prints_friendly_error_on_preset_error(tmp_path: Path) -> Non
             "--ledger", str(ledger_path),
             "--queue-root", str(queue_root),
             "--template", str(template_path),
-            "--member", "M0",
+            "--member", "M1",
             "--task-type", "sfp",
         ],
         capture_output=True, text=True,
@@ -1257,5 +1276,6 @@ def test_cli_submit_prints_friendly_error_on_preset_error(tmp_path: Path) -> Non
     )
     assert result.returncode == 1
     assert "[error]" in result.stderr
+    assert "preset_hash drift" in result.stderr
     # Should NOT contain a Python traceback
     assert "Traceback" not in result.stderr
