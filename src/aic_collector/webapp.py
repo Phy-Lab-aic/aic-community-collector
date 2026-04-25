@@ -1295,6 +1295,19 @@ def build_team_submit_preset(preset: TeamPreset, *, sfp_count: int) -> TeamPrese
     return replace(preset, tasks=tasks)
 
 
+def widget_default_kwargs(
+    session_state: Mapping[str, Any],
+    key: str,
+    default: Any,
+    *,
+    arg: str = "value",
+) -> dict[str, Any]:
+    """Return a widget default only when Session State is not already authoritative."""
+    if key in session_state:
+        return {}
+    return {arg: default}
+
+
 def build_team_slot_summary(
     preset: TeamPreset | None,
     team_state: dict[str, Any] | None,
@@ -1635,27 +1648,30 @@ if st is not None:
             mgr_sfp_count = st.number_input(
                 "SFP configs",
                 min_value=0,
-            max_value=int(team_state["remaining_slots"]) if team_widgets_locked and team_state is not None else 10000,
-            value=int(team_state["selected_sfp_count"]) if team_widgets_locked and team_state is not None else 20,
-            step=1 if team_widgets_locked else 10,
-            key="mgr_sfp_count",
-            disabled=bool(
-                team_widgets_locked
-                and team_state is not None
-                and int(team_state["remaining_slots"]) == 0
-            ),
-            help=(
-                "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
-                "균등 순환. 10의 배수 권장.  \n"
-                f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
-            ),
+                max_value=int(team_state["remaining_slots"]) if team_widgets_locked and team_state is not None else 10000,
+                step=1 if team_widgets_locked else 10,
+                key="mgr_sfp_count",
+                disabled=bool(
+                    team_widgets_locked
+                    and team_state is not None
+                    and int(team_state["remaining_slots"]) == 0
+                ),
+                help=(
+                    "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
+                    "균등 순환. 10의 배수 권장.  \n"
+                    f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
+                ),
+                **widget_default_kwargs(
+                    st.session_state,
+                    "mgr_sfp_count",
+                    int(team_state["selected_sfp_count"]) if team_widgets_locked and team_state is not None else 20,
+                ),
             )
         with col_sc:
             mgr_sc_count = st.number_input(
                 "SC configs",
                 min_value=0,
                 max_value=10000,
-                value=mgr_team_sc_default_count if team_widgets_locked else 10,
                 step=1 if team_widgets_locked else 2,
                 key="mgr_sc_count",
                 disabled=team_widgets_locked,
@@ -1663,6 +1679,11 @@ if st is not None:
                     "target cycling ON 시 SC 2종 target (rail 0·1)을 "
                     "균등 순환. 2의 배수 권장.  \n"
                     f"📖 [qualification_phase.md Trial 3]({AIC_QUAL_PHASE_URL}#trial-3-generalization-sc)"
+                ),
+                **widget_default_kwargs(
+                    st.session_state,
+                    "mgr_sc_count",
+                    mgr_team_sc_default_count if team_widgets_locked else 10,
                 ),
             )
     
@@ -1673,20 +1694,22 @@ if st is not None:
             with col_nic_fix:
                 st.markdown("###### NIC")
                 mgr_nic_fixed = st.checkbox(
-                    "고정 개수", value=False, key="mgr_nic_fixed",
+                    "고정 개수", key="mgr_nic_fixed",
                     disabled=team_widgets_locked,
                     help="on: 매 샘플 정확히 N개 / off: 1~N개 랜덤",
+                    **widget_default_kwargs(st.session_state, "mgr_nic_fixed", False),
                 )
             with col_nic_slider:
                 mgr_nic_max = st.slider(
                     "NIC 개수 (고정)" if mgr_nic_fixed else "NIC 최대 개수 (1~N 랜덤)",
-                    min_value=1, max_value=5, value=5, step=1,
+                    min_value=1, max_value=5, step=1,
                     key="mgr_nic_max",
                     disabled=team_widgets_locked,
                     help=(
                         "scene에 배치할 NIC 카드 개수. rail 0~4 중에서 선택.  \n"
                         f"📖 [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)"
                     ),
+                    **widget_default_kwargs(st.session_state, "mgr_nic_max", 5),
                 )
             mgr_nic_count_range = (mgr_nic_max if mgr_nic_fixed else 1, mgr_nic_max)
     
@@ -1695,26 +1718,27 @@ if st is not None:
             with col_sc_fix:
                 st.markdown("###### SC")
                 mgr_sc_fixed = st.checkbox(
-                    "고정 개수", value=False, key="mgr_sc_fixed",
+                    "고정 개수", key="mgr_sc_fixed",
                     disabled=team_widgets_locked,
                     help="on: 매 샘플 정확히 N개 / off: 1~N개 랜덤",
+                    **widget_default_kwargs(st.session_state, "mgr_sc_fixed", False),
                 )
             with col_sc_slider:
                 mgr_sc_max = st.slider(
                     "SC 개수 (고정)" if mgr_sc_fixed else "SC 최대 개수 (1~N 랜덤)",
-                    min_value=1, max_value=2, value=2, step=1,
+                    min_value=1, max_value=2, step=1,
                     key="mgr_sc_max",
                     disabled=team_widgets_locked,
                     help=(
                         "scene에 배치할 SC 포트 개수. rail 0·1 중에서 선택.  \n"
                         f"📖 [qualification_phase.md Trial 3]({AIC_QUAL_PHASE_URL}#trial-3-generalization-sc)"
                     ),
+                    **widget_default_kwargs(st.session_state, "mgr_sc_max", 2),
                 )
             mgr_sc_count_range = (mgr_sc_max if mgr_sc_fixed else 1, mgr_sc_max)
     
             mgr_target_cycling = st.checkbox(
                 "Target cycling (결정적 순환으로 균등 분배)",
-                value=MGR_DEFAULT_TARGET_CYCLING,
                 key="mgr_target_cycling",
                 disabled=team_widgets_locked,
                 help=(
@@ -1723,11 +1747,16 @@ if st is not None:
                     f"📖 SFP 10종 구조: [task_board_description.md Zone 1]({AIC_TASK_BOARD_URL}#zone-1-network-interface-cards-nic)  \n"
                     f"📖 SC 2종 구조: [qualification_phase.md Trial 3]({AIC_QUAL_PHASE_URL}#trial-3-generalization-sc)"
                 ),
+                **widget_default_kwargs(
+                    st.session_state,
+                    "mgr_target_cycling",
+                    MGR_DEFAULT_TARGET_CYCLING,
+                ),
             )
     
             # 시각 다이어그램 — 현재 Scene 설정으로 샘플 3개 생성해 실제 조합을 보여줌
             # ranges는 pose 값이라 다이어그램에 무관하므로 기본값으로 생성.
-            # st.markdown(unsafe_allow_html)은 SVG를 살균 → components.v1.html 사용.
+            # st.markdown(unsafe_allow_html)은 SVG를 살균 → iframe으로 격리 렌더링.
             preview_fixed_target = None
             if team_widgets_locked and team_preview_scene_cfg is not None:
                 preview_fixed_target = team_preview_scene_cfg.get("collection", {}).get("fixed_target")
@@ -1741,11 +1770,10 @@ if st is not None:
                 task_type="sfp",
                 sample_count=3,
             )
-            st.components.v1.html(
+            st.iframe(
                 f'<div style="display:flex;justify-content:center;padding:4px;">'
                 f'{_scene_svg}</div>',
                 height=560,
-                scrolling=True,
             )
     
         # 📏 Parameters expander — 랜덤화 범위 + 샘플링 전략
@@ -1764,7 +1792,6 @@ if st is not None:
             mgr_param_strategy = st.selectbox(
                 "샘플링 전략",
                 strategy_opts,
-                index=0,
                 key="mgr_param_strategy",
                 disabled=team_widgets_locked,
                 help=(
@@ -1774,14 +1801,19 @@ if st is not None:
                     "**lhs** — Latin Hypercube. 공간 채움 우수, 샘플 수 적을 때 유리. "
                     "단 append 배치마다 독립 재추첨."
                 ),
+                **widget_default_kwargs(
+                    st.session_state,
+                    "mgr_param_strategy",
+                    0,
+                    arg="index",
+                ),
             )
     
             _strategy_svg = render_sampling_strategy_svg(str(mgr_param_strategy))
-            st.components.v1.html(
+            st.iframe(
                 f'<div style="display:flex;justify-content:center;padding:4px;">'
                 f'{_strategy_svg}</div>',
                 height=420,
-                scrolling=False,
             )
     
             # (label, key, (aic_min, aic_max), step, format, source_url)
@@ -1806,12 +1838,16 @@ if st is not None:
                 v = st.slider(
                     label,
                     min_value=float(lo), max_value=float(hi),
-                    value=(float(lo), float(hi)),
                     step=float(step),
                     format=fmt,
                     key=f"mgr_range_{key}_range",
                     disabled=team_widgets_locked,
                     help=f"AIC 공식 허용: [{lo}, {hi}]  \n📖 [task_board_description.md]({url})",
+                    **widget_default_kwargs(
+                        st.session_state,
+                        f"mgr_range_{key}_range",
+                        (float(lo), float(hi)),
+                    ),
                 )
                 user_ranges[key] = [float(v[0]), float(v[1])]
     
@@ -1820,22 +1856,25 @@ if st is not None:
                 v = st.slider(
                     label,
                     min_value=0.0, max_value=float(aic_max),
-                    value=float(aic_max),
                     step=float(step),
                     format=fmt,
                     key=f"mgr_range_{key}_spread",
                     disabled=team_widgets_locked,
                     help=f"AIC 공식 허용: ± {aic_max}  \n📖 [qualification_phase.md §1]({url})",
+                    **widget_default_kwargs(
+                        st.session_state,
+                        f"mgr_range_{key}_spread",
+                        float(aic_max),
+                    ),
                 )
                 user_ranges[key] = float(v)
     
             # 시각 미리보기 — 선택 범위 vs AIC 최대 허용
             _params_svg = render_parameters_svg(user_ranges)
-            st.components.v1.html(
+            st.iframe(
                 f'<div style="display:flex;justify-content:center;padding:4px;">'
                 f'{_params_svg}</div>',
                 height=680,
-                scrolling=True,
             )
     
             # 변경 여부 판정 (모든 값이 AIC 공식 기본값=최대 범위와 같은지)
@@ -1866,10 +1905,11 @@ if st is not None:
         with st.expander("⚙️ 고급", expanded=False):
             mgr_seed = st.number_input(
                 "Seed",
-                min_value=0, value=42,
+                min_value=0,
                 key="mgr_seed",
                 disabled=team_widgets_locked,
                 help="재현용 base seed. 같은 seed + 같은 설정 → 같은 config 생성.",
+                **widget_default_kwargs(st.session_state, "mgr_seed", 42),
             )
     
         # Scene 사용자 정의 여부 (Scene 섹션 하단에 뱃지)

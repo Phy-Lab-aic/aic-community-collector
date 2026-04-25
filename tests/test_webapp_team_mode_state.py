@@ -24,6 +24,7 @@ from aic_collector.webapp import (  # noqa: E402
     render_scene_svg,
     build_team_slot_summary,
     build_team_submit_preset,
+    widget_default_kwargs,
 )
 
 
@@ -98,6 +99,20 @@ def test_build_team_mode_state_reports_slot_usage_and_clamps_sfp_count(tmp_path:
     assert state["default_sfp_count"] == 7
     assert state["selected_sfp_count"] == 7
     assert state["slot_exhausted"] is False
+
+
+def test_widget_default_kwargs_omits_default_when_session_state_already_has_key() -> None:
+    assert widget_default_kwargs({"mgr_sfp_count": 7}, "mgr_sfp_count", 20) == {}
+    assert widget_default_kwargs({}, "mgr_sfp_count", 20) == {"value": 20}
+    assert widget_default_kwargs({"mgr_param_strategy": "lhs"}, "mgr_param_strategy", 0, arg="index") == {}
+    assert widget_default_kwargs({}, "mgr_param_strategy", 0, arg="index") == {"index": 0}
+
+
+def test_webapp_uses_streamlit_iframe_for_svg_previews() -> None:
+    source = Path(PROJECT_DIR / "src/aic_collector/webapp.py").read_text(encoding="utf-8")
+
+    assert "st.components.v1.html" not in source
+    assert "st.iframe(" in source
 
 
 def test_build_team_mode_state_stays_aligned_with_submit_when_stale_ledger_claim_exists(
