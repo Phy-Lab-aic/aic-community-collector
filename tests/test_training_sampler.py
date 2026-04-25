@@ -291,6 +291,84 @@ def test_strategy_invalid_raises() -> None:
     raise AssertionError("bogus strategy에서 ValueError 안 남")
 
 
+def test_target_cycling_distributes_uniformly_across_10_targets() -> None:
+    """1000 SFP samples with target_cycling=True hit every (rail, port) 100 times."""
+    import pytest
+
+    try:
+        from scipy.stats import qmc  # noqa: F401
+    except (ImportError, ValueError) as exc:
+        pytest.skip(f"scipy.stats.qmc unavailable: {exc}")
+    cfg = {
+        "scene": {
+            "nic_count_range": [1, 1],
+            "sc_count_range":  [1, 1],
+            "target_cycling":  True,
+        },
+        "ranges": {},
+        "param_strategy": "lhs",
+    }
+    samples = sample_training_configs(cfg, "sfp", count=1000, seed=42, strategy="lhs")
+    counts: dict[tuple[int, str], int] = {}
+    for s in samples:
+        key = (s.target_rail, s.target_port_name)
+        counts[key] = counts.get(key, 0) + 1
+    assert len(counts) == 10
+    assert all(v == 100 for v in counts.values()), counts
+
+
+def test_lhs_pose_marginal_has_no_empty_bin() -> None:
+    """LHS guarantees every dimension's 10-bin histogram is non-empty for n>=10."""
+    import pytest
+
+    try:
+        from scipy.stats import qmc  # noqa: F401
+    except (ImportError, ValueError) as exc:
+        pytest.skip(f"scipy.stats.qmc unavailable: {exc}")
+    cfg = {
+        "scene": {
+            "nic_count_range": [1, 1],
+            "sc_count_range":  [1, 1],
+            "target_cycling":  True,
+        },
+        "ranges": {
+            "nic_translation": [-0.0215, 0.0234],
+            "nic_yaw":         [-0.1745, 0.1745],
+            "sc_translation":  [-0.06, 0.055],
+            "gripper_xy": 0.002,
+            "gripper_z":  0.002,
+            "gripper_rpy": 0.04,
+        },
+        "param_strategy": "lhs",
+    }
+    samples = sample_training_configs(cfg, "sfp", count=100, seed=42, strategy="lhs")
+    # Pull nic translation from the active rail of each sample.
+    nic_values = [next(iter(s.nic_poses.values()))["translation"] for s in samples]
+    bins = [0] * 10
+    lo, hi = -0.0215, 0.0234
+    for v in nic_values:
+        # clamp to [lo, hi) defensively, then bucket into 10 bins.
+        idx = min(9, max(0, int((v - lo) / (hi - lo) * 10)))
+        bins[idx] += 1
+    assert all(b > 0 for b in bins), bins
+
+
+def test_fixed_target_legacy_path_unchanged_regression() -> None:
+    """Sanity: fixed_target still collapses to a single (rail, port)."""
+    cfg = {
+        "scene": {
+            "nic_count_range": [1, 1],
+            "sc_count_range":  [1, 1],
+            "target_cycling":  False,
+        },
+        "ranges": {},
+        "collection": {"fixed_target": {"sfp": {"rail": 2, "port": "sfp_port_1"}}},
+        "param_strategy": "uniform",
+    }
+    samples = sample_training_configs(cfg, "sfp", count=20, seed=42, strategy="uniform")
+    assert all(s.target_rail == 2 and s.target_port_name == "sfp_port_1" for s in samples)
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
