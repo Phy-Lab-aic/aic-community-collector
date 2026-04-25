@@ -404,6 +404,70 @@ def adjust_claim_count(ledger_path: Path, entry_id: int, actual_count: int) -> N
         _write_ledger_entries(ledger_path, entries)
 
 
+def reconcile_ledger_with_queue(
+    ledger_path: Path,
+    queue_root: Path,
+) -> list[dict[str, Any]]:
+    """Annotate every ledger entry with simulator-stage failure data.
+
+    Scans `<queue_root>/<task_type>/failed/config_<task>_NNNNNN.yaml` and
+    sets, for each entry whose `[start_index, start_index + count)` window
+    contains failed indices:
+      - failed_indices:  sorted list of in-window failed sample indices
+      - validated_count: count - len(failed_indices)
+      - reconciled_at:   ISO-UTC timestamp of this reconciliation pass
+
+    Idempotent: re-running with the same `failed/` contents produces the
+    same payload modulo `reconciled_at`. Missing or absent `failed/`
+    directories are treated as zero failures.
+    """
+    with _ledger_lock(ledger_path):
+        entries = _ledger_entries(ledger_path)
+
+        failed_by_task: dict[str, list[int]] = {}
+        for entry in entries:
+            task_type = entry.get("task_type")
+            if not isinstance(task_type, str) or task_type in failed_by_task:
+                continue
+            failed_dir = queue_dir(queue_root, task_type, QueueState.FAILED)
+            indices: list[int] = []
+            if failed_dir.exists():
+                pattern = re.compile(
+                    _CONFIG_INDEX_RE_TEMPLATE.format(task_type=re.escape(task_type))
+                )
+                for path in failed_dir.iterdir():
+                    match = pattern.fullmatch(path.name)
+                    if match is not None:
+                        indices.append(int(match.group(1)))
+            failed_by_task[task_type] = sorted(indices)
+
+        now = _iso_utc_now()
+        for entry in entries:
+            task_type = entry.get("task_type")
+            start_index = entry.get("start_index")
+            count = entry.get("count")
+            if (
+                not isinstance(task_type, str)
+                or isinstance(start_index, bool)
+                or isinstance(count, bool)
+                or not isinstance(start_index, int)
+                or not isinstance(count, int)
+            ):
+                continue
+            window_end = start_index + count
+            in_window = [
+                idx
+                for idx in failed_by_task.get(task_type, [])
+                if start_index <= idx < window_end
+            ]
+            entry["failed_indices"] = in_window
+            entry["validated_count"] = max(0, count - len(in_window))
+            entry["reconciled_at"] = now
+
+        _write_ledger_entries(ledger_path, entries)
+        return entries
+
+
 def slot_range(preset: TeamPreset, member_id: str) -> tuple[int, int]:
     member_index = _member_index(preset, member_id)
     slot_start = member_index * preset.shard_stride

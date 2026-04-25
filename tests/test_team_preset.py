@@ -1077,3 +1077,86 @@ def test_submit_team_claim_blocks_on_preset_hash_drift(
         )
     # Only the seeded entry survives.
     assert len(_load_ledger(ledger_path)["entries"]) == 1
+
+
+from aic_collector.team_preset import reconcile_ledger_with_queue  # noqa: E402
+
+
+def _seed_ledger(ledger_path: Path, entries: list[dict[str, object]]) -> None:
+    yaml.safe_dump({"entries": entries}, ledger_path.open("w"), sort_keys=False)
+
+
+def _touch_failed(queue_root: Path, task_type: str, indices: list[int], width: int = 6) -> None:
+    failed = queue_dir(queue_root, task_type, QueueState.FAILED)
+    failed.mkdir(parents=True, exist_ok=True)
+    for idx in indices:
+        (failed / f"config_{task_type}_{idx:0{width}d}.yaml").write_text("{}", encoding="utf-8")
+
+
+def test_reconcile_records_failed_indices_within_window(tmp_path: Path) -> None:
+    queue_root = tmp_path / "train"
+    ledger_path = tmp_path / "ledger.yaml"
+    _seed_ledger(ledger_path, [
+        {"member_id": "M0", "task_type": "sfp", "start_index": 0, "count": 100,
+         "base_seed": 42, "strategy": "lhs", "queue_root": str(queue_root),
+         "preset_hash": "sha256:x", "git_sha": "abc", "created_at": "2026-04-26T00:00:00Z"},
+    ])
+    _touch_failed(queue_root, "sfp", [3, 17, 99, 200])  # 200 is out of window
+
+    updated = reconcile_ledger_with_queue(ledger_path, queue_root)
+
+    entry = updated[0]
+    assert entry["failed_indices"] == [3, 17, 99]
+    assert entry["validated_count"] == 100 - 3
+    assert "reconciled_at" in entry
+
+
+def test_reconcile_is_idempotent(tmp_path: Path) -> None:
+    queue_root = tmp_path / "train"
+    ledger_path = tmp_path / "ledger.yaml"
+    _seed_ledger(ledger_path, [
+        {"member_id": "M0", "task_type": "sfp", "start_index": 0, "count": 50,
+         "base_seed": 42, "strategy": "lhs", "queue_root": str(queue_root),
+         "preset_hash": "sha256:x", "git_sha": "abc", "created_at": "2026-04-26T00:00:00Z"},
+    ])
+    _touch_failed(queue_root, "sfp", [4, 8])
+
+    first = reconcile_ledger_with_queue(ledger_path, queue_root)
+    second = reconcile_ledger_with_queue(ledger_path, queue_root)
+
+    assert first[0]["failed_indices"] == second[0]["failed_indices"] == [4, 8]
+    assert first[0]["validated_count"] == second[0]["validated_count"] == 48
+
+
+def test_reconcile_handles_missing_failed_dir(tmp_path: Path) -> None:
+    queue_root = tmp_path / "train"  # not created
+    ledger_path = tmp_path / "ledger.yaml"
+    _seed_ledger(ledger_path, [
+        {"member_id": "M0", "task_type": "sfp", "start_index": 0, "count": 5,
+         "base_seed": 42, "strategy": "lhs", "queue_root": str(queue_root),
+         "preset_hash": "sha256:x", "git_sha": "abc", "created_at": "2026-04-26T00:00:00Z"},
+    ])
+
+    updated = reconcile_ledger_with_queue(ledger_path, queue_root)
+
+    assert updated[0]["failed_indices"] == []
+    assert updated[0]["validated_count"] == 5
+
+
+def test_reconcile_two_entries_share_failed_dir(tmp_path: Path) -> None:
+    queue_root = tmp_path / "train"
+    ledger_path = tmp_path / "ledger.yaml"
+    _seed_ledger(ledger_path, [
+        {"member_id": "M0", "task_type": "sfp", "start_index": 0, "count": 100,
+         "base_seed": 42, "strategy": "lhs", "queue_root": str(queue_root),
+         "preset_hash": "sha256:x", "git_sha": "abc", "created_at": "2026-04-26T00:00:00Z"},
+        {"member_id": "M1", "task_type": "sfp", "start_index": 100000, "count": 100,
+         "base_seed": 42, "strategy": "lhs", "queue_root": str(queue_root),
+         "preset_hash": "sha256:x", "git_sha": "abc", "created_at": "2026-04-26T00:00:00Z"},
+    ])
+    _touch_failed(queue_root, "sfp", [10, 100005])
+
+    updated = reconcile_ledger_with_queue(ledger_path, queue_root)
+
+    assert updated[0]["failed_indices"] == [10]
+    assert updated[1]["failed_indices"] == [100005]
