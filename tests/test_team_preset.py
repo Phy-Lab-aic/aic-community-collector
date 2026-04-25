@@ -1231,3 +1231,31 @@ def test_cli_submit_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert "start_index" in result.stdout
     payload = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
     assert payload["entries"][0]["member_id"] == "M0"
+
+
+def test_cli_submit_prints_friendly_error_on_preset_error(tmp_path: Path) -> None:
+    preset, queue_root, ledger_path, template_path = _make_submit_fixture(tmp_path)
+    # No AIC_ALLOW_DIRTY → dirty gate fires inside submit_team_claim.
+    # The CLI must print a friendly [error] line and return non-zero, not raise.
+    env = {
+        "PYTHONPATH": str(PROJECT_DIR / "src"),
+        "PATH": os.environ.get("PATH", ""),
+    }
+    result = subprocess.run(
+        [
+            _venv_python(), "-m", "aic_collector.team_preset", "submit",
+            "--preset", str(tmp_path / "preset.yaml"),
+            "--ledger", str(ledger_path),
+            "--queue-root", str(queue_root),
+            "--template", str(template_path),
+            "--member", "M0",
+            "--task-type", "sfp",
+        ],
+        capture_output=True, text=True,
+        cwd=PROJECT_DIR,
+        env=env,
+    )
+    assert result.returncode == 1
+    assert "[error]" in result.stderr
+    # Should NOT contain a Python traceback
+    assert "Traceback" not in result.stderr

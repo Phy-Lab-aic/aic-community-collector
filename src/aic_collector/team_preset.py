@@ -766,14 +766,21 @@ def _cli_submit(args: argparse.Namespace) -> int:
     if preset is None:
         print(f"[error] preset missing: {args.preset}", file=sys.stderr)
         return 2
-    result = submit_team_claim(
-        preset,
-        member_id=args.member,
-        task_type=args.task_type,
-        queue_root=Path(args.queue_root),
-        ledger_path=Path(args.ledger),
-        template_path=Path(args.template),
-    )
+    try:
+        result = submit_team_claim(
+            preset,
+            member_id=args.member,
+            task_type=args.task_type,
+            queue_root=Path(args.queue_root),
+            ledger_path=Path(args.ledger),
+            template_path=Path(args.template),
+        )
+    except SlotExhausted as exc:
+        print(f"[error] slot exhausted: {exc}", file=sys.stderr)
+        return 1
+    except PresetError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
     print(
         f"submitted: member={args.member} task={args.task_type} "
         f"start_index={result.start_index} written={result.written_count}"
@@ -809,5 +816,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    import sys as _sys
-    _sys.exit(main())
+    sys.exit(main())
