@@ -420,10 +420,16 @@ def reconcile_ledger_with_queue(
     Idempotent: re-running with the same `failed/` contents produces the
     same payload modulo `reconciled_at`. Missing or absent `failed/`
     directories are treated as zero failures.
+
+    Returns the updated entries list (same objects that were written to
+    disk; safe for the caller to iterate after the lock is released).
     """
     with _ledger_lock(ledger_path):
         entries = _ledger_entries(ledger_path)
 
+        # Cache key is task_type only: queue_root is the single arg passed in,
+        # so all entries share the same failed/ directory regardless of the
+        # entry["queue_root"] value recorded at submit time.
         failed_by_task: dict[str, list[int]] = {}
         for entry in entries:
             task_type = entry.get("task_type")

@@ -1122,10 +1122,16 @@ def test_reconcile_is_idempotent(tmp_path: Path) -> None:
     _touch_failed(queue_root, "sfp", [4, 8])
 
     first = reconcile_ledger_with_queue(ledger_path, queue_root)
+    # Snapshot before second pass — list is mutated in place by the function.
+    first_snapshot = [dict(entry) for entry in first]
     second = reconcile_ledger_with_queue(ledger_path, queue_root)
 
-    assert first[0]["failed_indices"] == second[0]["failed_indices"] == [4, 8]
-    assert first[0]["validated_count"] == second[0]["validated_count"] == 48
+    assert first_snapshot[0]["failed_indices"] == second[0]["failed_indices"] == [4, 8]
+    assert first_snapshot[0]["validated_count"] == second[0]["validated_count"] == 48
+    # All fields except reconciled_at must be byte-identical between runs.
+    def _strip_reconciled(entry: dict[str, object]) -> dict[str, object]:
+        return {k: v for k, v in entry.items() if k != "reconciled_at"}
+    assert [_strip_reconciled(e) for e in first_snapshot] == [_strip_reconciled(e) for e in second]
 
 
 def test_reconcile_handles_missing_failed_dir(tmp_path: Path) -> None:
