@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
 import threading
@@ -1166,3 +1167,56 @@ def test_reconcile_two_entries_share_failed_dir(tmp_path: Path) -> None:
 
     assert updated[0]["failed_indices"] == [10]
     assert updated[1]["failed_indices"] == [100005]
+
+
+import subprocess
+
+
+def test_cli_reconcile_smoke(tmp_path: Path) -> None:
+    queue_root = tmp_path / "train"
+    ledger_path = tmp_path / "ledger.yaml"
+    _seed_ledger(ledger_path, [
+        {"member_id": "M0", "task_type": "sfp", "start_index": 0, "count": 5,
+         "base_seed": 42, "strategy": "lhs", "queue_root": str(queue_root),
+         "preset_hash": "sha256:x", "git_sha": "abc", "created_at": "2026-04-26T00:00:00Z"},
+    ])
+    _touch_failed(queue_root, "sfp", [2])
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "aic_collector.team_preset", "reconcile",
+            "--ledger", str(ledger_path),
+            "--queue-root", str(queue_root),
+        ],
+        capture_output=True, text=True, check=True,
+        cwd=PROJECT_DIR,
+        env={**os.environ, "PYTHONPATH": str(PROJECT_DIR / "src")},
+    )
+    assert "M0" in result.stdout
+    assert "1 failed" in result.stdout
+    payload = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
+    assert payload["entries"][0]["failed_indices"] == [2]
+
+
+def test_cli_submit_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    preset, queue_root, ledger_path, template_path = _make_submit_fixture(tmp_path)
+    # Avoid dirty-tree check polluting the smoke test.
+    env = {**os.environ, "PYTHONPATH": str(PROJECT_DIR / "src"), "AIC_ALLOW_DIRTY": "1"}
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "aic_collector.team_preset", "submit",
+            "--preset", str(tmp_path / "preset.yaml"),
+            "--ledger", str(ledger_path),
+            "--queue-root", str(queue_root),
+            "--template", str(template_path),
+            "--member", "M0",
+            "--task-type", "sfp",
+        ],
+        capture_output=True, text=True, check=True,
+        cwd=PROJECT_DIR,
+        env=env,
+    )
+    assert "start_index" in result.stdout
+    payload = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
+    assert payload["entries"][0]["member_id"] == "M0"

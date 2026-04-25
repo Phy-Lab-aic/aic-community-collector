@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import fcntl
 import hashlib
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -740,3 +742,72 @@ def load_preset(path: Path) -> TeamPreset | None:
         members=members,
         preset_hash=_canonical_hash(raw),
     )
+
+
+def _cli_reconcile(args: argparse.Namespace) -> int:
+    ledger_path = Path(args.ledger)
+    queue_root = Path(args.queue_root)
+    entries = reconcile_ledger_with_queue(ledger_path, queue_root)
+    for entry in entries:
+        member_id = entry.get("member_id")
+        task_type = entry.get("task_type")
+        count = entry.get("count")
+        failed = entry.get("failed_indices") or []
+        validated = entry.get("validated_count")
+        print(
+            f"{member_id}/{task_type}: {count} written, "
+            f"{len(failed)} failed, {validated} validated"
+        )
+    return 0
+
+
+def _cli_submit(args: argparse.Namespace) -> int:
+    preset = load_preset(Path(args.preset))
+    if preset is None:
+        print(f"[error] preset missing: {args.preset}", file=sys.stderr)
+        return 2
+    result = submit_team_claim(
+        preset,
+        member_id=args.member,
+        task_type=args.task_type,
+        queue_root=Path(args.queue_root),
+        ledger_path=Path(args.ledger),
+        template_path=Path(args.template),
+    )
+    print(
+        f"submitted: member={args.member} task={args.task_type} "
+        f"start_index={result.start_index} written={result.written_count}"
+    )
+    return 0
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="aic_collector.team_preset")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    rec = sub.add_parser("reconcile", help="Annotate ledger with sim-stage failures")
+    rec.add_argument("--ledger", required=True)
+    rec.add_argument("--queue-root", required=True)
+    rec.set_defaults(func=_cli_reconcile)
+
+    sub_submit = sub.add_parser("submit", help="Append a claim and write configs")
+    sub_submit.add_argument("--preset", required=True)
+    sub_submit.add_argument("--ledger", required=True)
+    sub_submit.add_argument("--queue-root", required=True)
+    sub_submit.add_argument("--template", required=True)
+    sub_submit.add_argument("--member", required=True)
+    sub_submit.add_argument("--task-type", required=True, choices=("sfp", "sc"))
+    sub_submit.set_defaults(func=_cli_submit)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    _sys.exit(main())
