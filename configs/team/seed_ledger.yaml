@@ -1,4 +1,1 @@
-# Append-only ledger of team data-collection claims.
-# Entries are written by the webapp and should stay immutable.
-
 entries: []

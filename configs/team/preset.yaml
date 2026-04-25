@@ -1,4 +1,4 @@
-# Team-wide preset for trial_1 data collection.
+# Team-wide preset for blindspot-fix collection round (2026-04-26).
 # Edits are changes to the team contract - open a PR.
 
 version: 1
@@ -7,7 +7,7 @@ team:
   shard_stride: 100000
   index_width: 6
 sampling:
-  strategy: uniform
+  strategy: lhs
   ranges:
     nic_translation: [-0.0215, 0.0234]
     nic_yaw: [-0.1745, 0.1745]
@@ -18,13 +18,10 @@ sampling:
 scene:
   nic_count_range: [1, 1]
   sc_count_range: [1, 1]
-  target_cycling: false
-  fixed_target:
-    sfp: {rail: 0, port: "sfp_port_0"}
-    sc: null
+  target_cycling: true
 tasks:
   sfp_default_count: 1000
-  sc_default_count: 0
+  sc_default_count: 100
 members:
   - id: M0
     name: alice
