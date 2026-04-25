@@ -234,25 +234,31 @@ def launch_engine_task(
     run_tag: str,
     run_idx: int,
     startup_wait: int = 25,
+    headless: bool = False,
 ) -> dict:
-    """엔진 프로세스 백그라운드 기동. {pid, log_path} 반환."""
+    """엔진 프로세스 백그라운드 기동. {pid, log_path} 반환.
+
+    headless=True면 aic_gz_bringup launch에 ``gazebo_gui:=false`` 와
+    ``launch_rviz:=false`` 인자를 추가해 GUI 창을 띄우지 않는다.
+    """
     with _task_timer("launch-engine"):
         gt_arg = "ground_truth:=true" if ground_truth else "ground_truth:=false"
         log_path = f"/tmp/e2e_engine_{run_tag}_run{run_idx}.log"
         env = _base_env()
 
-        pid = run_process_background(
-            [
-                "distrobox", "enter", "aic_eval", "--",
-                "/entrypoint.sh",
-                gt_arg,
-                "start_aic_engine:=true",
-                f"aic_engine_config_file:={engine_cfg}",
-            ],
-            log_path=log_path,
-            env=env,
-        )
-        print(f"[engine] 기동 (pid={pid}, {gt_arg})")
+        cmd = [
+            "distrobox", "enter", "aic_eval", "--",
+            "/entrypoint.sh",
+            gt_arg,
+            "start_aic_engine:=true",
+            f"aic_engine_config_file:={engine_cfg}",
+        ]
+        if headless:
+            cmd.extend(["gazebo_gui:=false", "launch_rviz:=false"])
+
+        pid = run_process_background(cmd, log_path=log_path, env=env)
+        gui_state = "headless" if headless else "gui"
+        print(f"[engine] 기동 (pid={pid}, {gt_arg}, {gui_state})")
         time.sleep(startup_wait)
         return {"pid": pid, "log_path": log_path}
 
@@ -659,6 +665,7 @@ def run_one(
     ground_truth = engine_cfg.get("ground_truth", True)
     use_compressed = engine_cfg.get("use_compressed", False)
     collect_episode = collection.get("collect_episode", False)
+    headless = bool(engine_cfg.get("headless", False))
     template = engine_cfg.get("template", "configs/community_random_config.yaml")
     seed = collection.get("seed", 42)
 
@@ -692,7 +699,9 @@ def run_one(
     republish_pids = []
 
     try:
-        engine_handle = launch_engine_task(engine_cfg_path, ground_truth, run_tag, run_idx)
+        engine_handle = launch_engine_task(
+            engine_cfg_path, ground_truth, run_tag, run_idx, headless=headless
+        )
 
         # 4. Republish (compressed only)
         republish_pids = launch_republish_task(use_compressed, run_tag, run_idx)
@@ -750,10 +759,17 @@ def collect_e2e_flow(
     seed_override: int | None = None,
     do_deploy: bool = True,
     dry_run: bool = False,
+    headless: bool | None = None,
 ) -> dict:
-    """E2E 수집 파이프라인."""
+    """E2E 수집 파이프라인.
+
+    headless가 명시되면 cfg["engine"]["headless"]를 덮어쓴다 (CLI 우선).
+    None이면 cfg 값을 그대로 사용한다.
+    """
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
+    if headless is not None:
+        cfg.setdefault("engine", {})["headless"] = bool(headless)
 
     collection = cfg.get("collection", {}) or {}
     params_cfg = cfg.get("parameters", {}) or {}
@@ -887,6 +903,7 @@ def run_prebuilt_engine_config(
     use_compressed: bool = False,
     collect_episode: bool = False,
     output_root: str = "~/aic_community_e2e",
+    headless: bool = False,
 ) -> dict:
     """이미 생성된 엔진 config 파일로 1 run 실행 (큐 소비용).
 
@@ -935,7 +952,9 @@ def run_prebuilt_engine_config(
     republish_pids: list[int] = []
 
     try:
-        engine_handle = launch_engine_task(engine_cfg_path, ground_truth, run_tag, run_idx)
+        engine_handle = launch_engine_task(
+            engine_cfg_path, ground_truth, run_tag, run_idx, headless=headless
+        )
         republish_pids = launch_republish_task(use_compressed, run_tag, run_idx)
         policy_env = build_policy_env(policy_default, per_trial, act_model_path)
         policy_timeout = trials_count * 200 + 60

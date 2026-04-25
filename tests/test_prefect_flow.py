@@ -40,3 +40,64 @@ def test_restart_docker_removes_previous_engine_results_without_backup(
         ["docker", "exec", "aic_eval", "id", "tester"],
         ["docker", "restart", "aic_eval"],
     ]
+
+
+def _spy_launch_engine(monkeypatch) -> list[list[str]]:
+    """Capture distrobox cmd handed to run_process_background, skip sleep."""
+    from aic_collector.prefect import flow as flow_mod
+
+    captured: list[list[str]] = []
+
+    def fake_run_process_background(
+        cmd: list[str],
+        *,
+        log_path: str,
+        env: dict[str, str],
+    ) -> int:
+        captured.append(list(cmd))
+        return 4242
+
+    monkeypatch.setattr(flow_mod, "run_process_background", fake_run_process_background)
+    monkeypatch.setattr(flow_mod.time, "sleep", lambda _seconds: None)
+    return captured
+
+
+def test_launch_engine_task_default_keeps_gui_on(monkeypatch) -> None:
+    from aic_collector.prefect import flow as flow_mod
+
+    captured = _spy_launch_engine(monkeypatch)
+
+    handle = flow_mod.launch_engine_task.fn(
+        engine_cfg="/tmp/cfg.yaml",
+        ground_truth=True,
+        run_tag="tag",
+        run_idx=1,
+        startup_wait=0,
+    )
+
+    assert handle["pid"] == 4242
+    cmd = captured[0]
+    assert "gazebo_gui:=false" not in cmd
+    assert "launch_rviz:=false" not in cmd
+
+
+def test_launch_engine_task_headless_disables_gazebo_and_rviz(monkeypatch) -> None:
+    from aic_collector.prefect import flow as flow_mod
+
+    captured = _spy_launch_engine(monkeypatch)
+
+    flow_mod.launch_engine_task.fn(
+        engine_cfg="/tmp/cfg.yaml",
+        ground_truth=False,
+        run_tag="tag",
+        run_idx=1,
+        startup_wait=0,
+        headless=True,
+    )
+
+    cmd = captured[0]
+    assert "gazebo_gui:=false" in cmd
+    assert "launch_rviz:=false" in cmd
+    assert "ground_truth:=false" in cmd
+    assert "start_aic_engine:=true" in cmd
+    assert "aic_engine_config_file:=/tmp/cfg.yaml" in cmd

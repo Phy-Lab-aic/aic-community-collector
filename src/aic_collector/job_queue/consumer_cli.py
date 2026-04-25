@@ -60,6 +60,7 @@ def run_one(
     run_tag: str,
     timeout_sec: int | None,
     log_path: Path | None,
+    headless: bool = False,
 ) -> int:
     """aic-prefect-run --engine-config 를 subprocess로 실행하고 리턴코드 반환."""
     cmd = [
@@ -71,6 +72,7 @@ def run_one(
         "--collect-episode", str(collect_episode).lower(),
         "--output-root", output_root,
         "--run-tag", run_tag,
+        "--headless" if headless else "--no-headless",
     ]
     if act_model_path:
         cmd += ["--act-model-path", act_model_path]
@@ -121,6 +123,15 @@ def main() -> int:
     parser.add_argument(
         "--log", default="/tmp/aic_worker_run.log",
         help="엔진 실행 로그 파일 (append 모드)",
+    )
+    parser.add_argument(
+        "--headless",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "엔진 GUI 비표시 모드 (Gazebo + RViz 창 끄기). "
+            "기본 GUI 표시. 대량 수집/CI에는 --headless 권장."
+        ),
     )
     args = parser.parse_args()
 
@@ -226,6 +237,7 @@ def main() -> int:
                 run_tag=run_tag,
                 timeout_sec=args.timeout,
                 log_path=log_path,
+                headless=args.headless,
             )
 
             duration_sec = int(time.time() - claim_t0)
