@@ -229,6 +229,17 @@ def _validate_members(value: Any) -> tuple[Mapping[str, str], ...]:
     return tuple(members)
 
 
+def _validate_scene(value: Any) -> dict[str, Any]:
+    scene = _validate_mapping(value, "scene")
+    fixed_target = scene.get("fixed_target")
+    target_cycling = scene.get("target_cycling", True)
+    if fixed_target in (None, {}) and target_cycling is False:
+        raise PresetError(
+            "scene.target_cycling must be true when scene.fixed_target is unset"
+        )
+    return scene
+
+
 def _thaw(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(k): _thaw(v) for k, v in value.items()}
@@ -595,7 +606,7 @@ def load_preset(path: Path) -> TeamPreset | None:
     index_width = _validate_positive_int(_require_path(raw, "team.index_width"), "team.index_width")
     strategy = _validate_strategy(_require_path(raw, "sampling.strategy"))
     ranges = _freeze(_validate_mapping(_require_path(raw, "sampling.ranges"), "sampling.ranges"))
-    scene = _freeze(_validate_mapping(_require_path(raw, "scene"), "scene"))
+    scene = _freeze(_validate_scene(_require_path(raw, "scene")))
     tasks = _freeze(_validate_tasks(_require_path(raw, "tasks")))
     members = _validate_members(_require_path(raw, "members"))
 
