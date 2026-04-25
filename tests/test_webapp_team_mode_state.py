@@ -66,6 +66,16 @@ def _touch_config(queue_root: Path, task_type: str, state: QueueState, index: in
     path.write_text("{}", encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _clean_git_sha(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin _git_sha to a clean value so reproducibility gates pass."""
+    from aic_collector import team_preset as _tp_mod
+
+    monkeypatch.setattr(_tp_mod, "_git_sha", lambda: "cleanabc")
+    monkeypatch.delenv("AIC_ALLOW_DIRTY", raising=False)
+    monkeypatch.delenv("AIC_ALLOW_PRESET_DRIFT", raising=False)
+
+
 def test_build_team_mode_state_reports_slot_usage_and_clamps_sfp_count(tmp_path: Path) -> None:
     queue_root = tmp_path / "queue"
     preset = _preset(tasks={"sfp_default_count": 9, "sc_default_count": 0})

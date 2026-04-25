@@ -580,6 +580,13 @@ def submit_team_claim(
         if start_index + requested_count > slot_end_exclusive:
             raise SlotExhausted(f"No remaining slot capacity for member: {member_id}")
 
+        _enforce_repro_gates(
+            entries,
+            task_type=task_type,
+            preset_hash=preset.preset_hash,
+            git_sha=_git_sha(),
+        )
+
         entry_id = _append_claim_locked(
             entries,
             member_id=member_id,

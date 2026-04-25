@@ -37,6 +37,42 @@ def _load_ledger(path: Path) -> dict[str, object]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def _make_submit_fixture(tmp_path: Path) -> tuple[TeamPreset, Path, Path, Path]:
+    """Build a minimal valid preset + queue/ledger/template paths."""
+    preset_path = _write_preset(
+        tmp_path / "preset.yaml",
+        """
+team: {base_seed: 42, shard_stride: 1000, index_width: 6}
+sampling:
+  strategy: lhs
+  ranges:
+    nic_translation: [-0.0215, 0.0234]
+    nic_yaw:         [-0.1745, 0.1745]
+    sc_translation:  [-0.06, 0.055]
+    gripper_xy:      0.002
+    gripper_z:       0.002
+    gripper_rpy:     0.04
+scene:
+  nic_count_range: [1, 1]
+  sc_count_range:  [1, 1]
+  target_cycling:  true
+tasks: {sfp_default_count: 10, sc_default_count: 0, sfp: 10}
+members:
+  - {id: M0, name: alice}
+  - {id: M1, name: bob}
+""".strip(),
+    )
+    preset = load_preset(preset_path)
+    assert preset is not None
+
+    queue_root = tmp_path / "train"
+    queue_root.mkdir()
+    ledger_path = tmp_path / "ledger.yaml"
+    template_path = tmp_path / "template.yaml"
+    template_path.write_text("scoring:\n  topics: []\n", encoding="utf-8")
+    return preset, queue_root, ledger_path, template_path
+
+
 def test_load_preset_happy_path(tmp_path: Path) -> None:
     path = _write_preset(
         tmp_path / "preset.yaml",
@@ -978,3 +1014,66 @@ def test_enforce_repro_gates_first_submit_passes(monkeypatch: pytest.MonkeyPatch
         preset_hash="sha256:any",
         git_sha="abcdef",
     )
+
+
+def test_submit_team_claim_blocks_on_dirty_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aic_collector import team_preset as tp_mod
+
+    monkeypatch.delenv("AIC_ALLOW_DIRTY", raising=False)
+    monkeypatch.setattr(tp_mod, "_git_sha", lambda: "dirty:cafef00d")
+
+    preset, queue_root, ledger_path, template_path = _make_submit_fixture(tmp_path)
+
+    with pytest.raises(PresetError, match="dirty tree"):
+        tp_mod.submit_team_claim(
+            preset,
+            member_id="M0",
+            task_type="sfp",
+            queue_root=queue_root,
+            ledger_path=ledger_path,
+            template_path=template_path,
+        )
+    # Ledger must be untouched.
+    assert not ledger_path.exists() or _load_ledger(ledger_path) == {"entries": []}
+
+
+def test_submit_team_claim_blocks_on_preset_hash_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aic_collector import team_preset as tp_mod
+
+    monkeypatch.delenv("AIC_ALLOW_PRESET_DRIFT", raising=False)
+    monkeypatch.setattr(tp_mod, "_git_sha", lambda: "cleanabc")
+
+    preset, queue_root, ledger_path, template_path = _make_submit_fixture(tmp_path)
+
+    # Seed an entry with a different preset_hash.
+    seeded = [
+        {
+            "member_id": "M0",
+            "task_type": "sfp",
+            "base_seed": preset.base_seed,
+            "start_index": 0,
+            "count": 0,
+            "strategy": preset.strategy,
+            "queue_root": str(queue_root),
+            "preset_hash": "sha256:olddifferent",
+            "git_sha": "cleanabc",
+            "created_at": "2026-04-20T00:00:00Z",
+        }
+    ]
+    yaml.safe_dump({"entries": seeded}, ledger_path.open("w"), sort_keys=False)
+
+    with pytest.raises(PresetError, match="preset_hash drift"):
+        tp_mod.submit_team_claim(
+            preset,
+            member_id="M1",
+            task_type="sfp",
+            queue_root=queue_root,
+            ledger_path=ledger_path,
+            template_path=template_path,
+        )
+    # Only the seeded entry survives.
+    assert len(_load_ledger(ledger_path)["entries"]) == 1

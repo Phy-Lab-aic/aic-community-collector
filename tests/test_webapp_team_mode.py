@@ -62,6 +62,16 @@ def _config(path: Path) -> dict[str, object]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+@pytest.fixture(autouse=True)
+def _clean_git_sha(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin _git_sha to a clean value so reproducibility gates pass."""
+    from aic_collector import team_preset as _tp_mod
+
+    monkeypatch.setattr(_tp_mod, "_git_sha", lambda: "cleanabc")
+    monkeypatch.delenv("AIC_ALLOW_DIRTY", raising=False)
+    monkeypatch.delenv("AIC_ALLOW_PRESET_DRIFT", raising=False)
+
+
 def test_submit_team_claim_happy_path_writes_three_files_and_one_ledger_entry(tmp_path: Path) -> None:
     queue_root = tmp_path / "queue"
     ledger_path = tmp_path / "ledger.yaml"
