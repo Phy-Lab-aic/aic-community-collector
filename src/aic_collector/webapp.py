@@ -2230,13 +2230,14 @@ if st is not None:
             output_root: str,
             timeout: int | None,
             recover_first: bool,
+            headless: bool,
             policy_sfp: str | None = None,
             policy_sc: str | None = None,
         ) -> None:
             """aic-collector-worker를 백그라운드 subprocess로 기동."""
             if _worker_status():
                 raise RuntimeError("이미 워커가 실행 중입니다. 중지 후 다시 시작하세요.")
-    
+
             WORKER_LOG_FILE.write_text("")
             cmd = [
                 "uv", "run", "aic-collector-worker",
@@ -2248,6 +2249,7 @@ if st is not None:
                 "--collect-episode", str(collect_episode).lower(),
                 "--output-root", output_root,
                 "--log", str(WORKER_LOG_FILE),
+                "--headless" if headless else "--no-headless",
             ]
             if limit is not None and limit > 0:
                 cmd += ["--limit", str(limit)]
@@ -2542,7 +2544,16 @@ if st is not None:
                         value=True, key="exec_recover",
                         help="비정상 종료로 남은 파일을 복구합니다.",
                     )
-    
+
+                exec_headless = st.checkbox(
+                    "headless (시뮬레이터 GUI 끄기)",
+                    value=False, key="exec_headless",
+                    help=(
+                        "ON: Gazebo 뷰어 + RViz 창을 띄우지 않고 엔진을 백그라운드로 실행. "
+                        "대량 수집·CI에 권장. OFF: 기존처럼 GUI 표시 (시연·디버깅용)."
+                    ),
+                )
+
                 # Output root — 결과 탭과 세션으로 공유
                 if "shared_output_root" not in st.session_state:
                     st.session_state["shared_output_root"] = str(OUTPUT_ROOT)
@@ -2595,6 +2606,7 @@ if st is not None:
                             output_root=str(exec_output_root),
                             timeout=int(exec_timeout) if int(exec_timeout) > 0 else None,
                             recover_first=exec_recover,
+                            headless=exec_headless,
                         )
                         st.success("워커 시작됨. 아래 로그에서 진행 확인.")
                         time.sleep(1)
