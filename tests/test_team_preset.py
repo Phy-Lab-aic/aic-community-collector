@@ -70,7 +70,10 @@ members:
     queue_root.mkdir()
     ledger_path = tmp_path / "ledger.yaml"
     template_path = tmp_path / "template.yaml"
-    template_path.write_text("scoring:\n  topics: []\n", encoding="utf-8")
+    template_path.write_text(
+        "scoring:\n  topics: []\ntask_board_limits: {}\nrobot: {}\n",
+        encoding="utf-8",
+    )
     return preset, queue_root, ledger_path, template_path
 
 
@@ -1083,6 +1086,14 @@ def test_submit_team_claim_blocks_on_preset_hash_drift(
 from aic_collector.team_preset import reconcile_ledger_with_queue  # noqa: E402
 
 
+def _venv_python() -> str:
+    """Prefer the project .venv interpreter so subprocess sees the same
+    numpy/scipy ABI as the test session, even when pytest runs from a
+    system Python with different package versions."""
+    venv = PROJECT_DIR / ".venv" / "bin" / "python3"
+    return str(venv) if venv.exists() else sys.executable
+
+
 def _seed_ledger(ledger_path: Path, entries: list[dict[str, object]]) -> None:
     yaml.safe_dump({"entries": entries}, ledger_path.open("w"), sort_keys=False)
 
@@ -1184,7 +1195,7 @@ def test_cli_reconcile_smoke(tmp_path: Path) -> None:
 
     result = subprocess.run(
         [
-            sys.executable, "-m", "aic_collector.team_preset", "reconcile",
+            _venv_python(), "-m", "aic_collector.team_preset", "reconcile",
             "--ledger", str(ledger_path),
             "--queue-root", str(queue_root),
         ],
@@ -1205,7 +1216,7 @@ def test_cli_submit_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
     result = subprocess.run(
         [
-            sys.executable, "-m", "aic_collector.team_preset", "submit",
+            _venv_python(), "-m", "aic_collector.team_preset", "submit",
             "--preset", str(tmp_path / "preset.yaml"),
             "--ledger", str(ledger_path),
             "--queue-root", str(queue_root),
