@@ -35,7 +35,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fakeredis", specifier = "<2.27" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", specifier = ">=1.13.0" },
     { name = "numpy" },
     { name = "prefect", specifier = ">=3.0" },
     { name = "pyyaml" },

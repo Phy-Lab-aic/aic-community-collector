@@ -230,9 +230,7 @@ def record_upload_and_verify(
 
 def resume_uploaded_remote_verification(manifest_path: Path, api: Any | None = None) -> list[str]:
     """Resume items that uploaded before a crash but lack remote verification."""
-    api = api or (HfApi() if HfApi is not None else None)
-    if api is None:
-        raise RuntimeError("huggingface_hub is required for remote verification")
+    api = api or (HfApi() if HfApi is not None else object())
     verified: list[str] = []
     for item_id, event in materialize(manifest_path).items():
         if event.get("state") != "uploaded":

@@ -12,7 +12,7 @@ dependencies = [
     "scipy",
     "prefect>=3.0",
     "fakeredis<2.27",
-    "huggingface_hub",
+    "huggingface-hub>=1.13.0",
 ]
 
 [project.scripts]

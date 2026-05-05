@@ -127,94 +127,11 @@ WORKER_STATE_FILE = Path("/tmp/aic_worker_state.json")
 WORKER_PID_FILE = Path("/tmp/aic_worker_pid.txt")
 WORKER_LOG_FILE = Path("/tmp/aic_worker_run.log")
 
-# Batch automation runner files stay isolated from the normal queue worker UI.
+# Batch automation uses separate status surfaces so it never collides with the
+# normal queue worker controls.
+AUTOMATION_STATE_FILE = Path("/tmp/aic_automation_state.json")
 AUTOMATION_PID_FILE = Path("/tmp/aic_automation_pid.txt")
-AUTOMATION_STATUS_FILE = Path("/tmp/aic_automation_status.json")
 AUTOMATION_LOG_FILE = Path("/tmp/aic_automation_run.log")
-AUTOMATION_WORKER_STATE_FILE = Path("/tmp/aic_automation_worker_state.json")
-AUTOMATION_STATE_FILE = AUTOMATION_WORKER_STATE_FILE
-
-
-@dataclass(frozen=True)
-class AutomationRunnerCommand:
-    """Command/env contract for the batch automation supervisor subprocess."""
-
-    command: list[str]
-    env: dict[str, str]
-    pid_file: Path
-    status_file: Path
-    log_file: Path
-    worker_state_file: Path
-
-
-def build_automation_runner_command(
-    *,
-    batch_size: int,
-    hf_repo_id: str,
-    queue_root: str | Path,
-    output_root: str | Path,
-    pid_file: Path = AUTOMATION_PID_FILE,
-    status_file: Path = AUTOMATION_STATUS_FILE,
-    log_file: Path = AUTOMATION_LOG_FILE,
-    worker_state_file: Path = AUTOMATION_WORKER_STATE_FILE,
-    env: Mapping[str, str] | None = None,
-) -> AutomationRunnerCommand:
-    """Build the isolated automation runner command used by Streamlit controls."""
-    command = [
-        "uv", "run", "aic-automation-batch",
-        "--batch-size", str(batch_size),
-        "--hf-repo-id", hf_repo_id,
-        "--queue-root", str(queue_root),
-        "--output-root", str(output_root),
-        "--pid-file", str(pid_file),
-        "--status-file", str(status_file),
-        "--log-file", str(log_file),
-        "--worker-state-file", str(worker_state_file),
-    ]
-    runner_env = dict(os.environ if env is None else env)
-    runner_env["AIC_WORKER_STATE_FILE"] = str(worker_state_file)
-    return AutomationRunnerCommand(
-        command=command,
-        env=runner_env,
-        pid_file=pid_file,
-        status_file=status_file,
-        log_file=log_file,
-        worker_state_file=worker_state_file,
-    )
-
-
-def build_automation_command(
-    *,
-    batch_size: int,
-    hf_repo_id: str,
-    queue_root: str | Path,
-    output_root: str | Path,
-    staging_root: str | Path,
-    manifest_path: str | Path,
-    converter_path: str | Path,
-    repeat_count: int = 1,
-    worker_state_file: Path = AUTOMATION_STATE_FILE,
-) -> list[str]:
-    """Build the public batch automation command without persisting secrets."""
-    return [
-        "uv", "run", "aic-automation-batch",
-        "--batch-size", str(batch_size),
-        "--hf-repo-id", hf_repo_id,
-        "--queue-root", str(queue_root),
-        "--output-root", str(output_root),
-        "--staging-root", str(staging_root),
-        "--manifest", str(manifest_path),
-        "--converter-path", str(converter_path),
-        "--repeat-count", str(repeat_count),
-        "--worker-state-file", str(worker_state_file),
-    ]
-
-
-def build_automation_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return automation subprocess env; HF_TOKEN is inherited, not copied into UI state."""
-    runner_env = dict(os.environ if env is None else env)
-    runner_env["AIC_WORKER_STATE_FILE"] = str(AUTOMATION_STATE_FILE)
-    return runner_env
 
 # Prefect 서버
 PREFECT_SERVER_URL = "http://127.0.0.1:4200"
@@ -1395,6 +1312,74 @@ def widget_default_kwargs(
     if key in session_state:
         return {}
     return {arg: default}
+
+
+def build_automation_command(
+    *,
+    batch_size: int,
+    hf_repo_id: str,
+    queue_root: Path,
+    output_root: Path,
+    staging_root: Path,
+    manifest_path: Path,
+    converter_path: Path,
+    repeat_count: int,
+    policy: str = "cheatcode",
+) -> list[str]:
+    """Build the Streamlit-launched automation supervisor command."""
+    return [
+        "uv",
+        "run",
+        "aic-automation-batch",
+        "--batch-size",
+        str(int(batch_size)),
+        "--hf-repo-id",
+        hf_repo_id,
+        "--queue-root",
+        str(queue_root),
+        "--output-root",
+        str(output_root),
+        "--staging-root",
+        str(staging_root),
+        "--manifest",
+        str(manifest_path),
+        "--converter-path",
+        str(converter_path),
+        "--worker-state-file",
+        str(AUTOMATION_STATE_FILE),
+        "--repeat-count",
+        str(int(repeat_count)),
+        "--policy",
+        policy,
+    ]
+
+
+def build_automation_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build automation subprocess env without storing Hugging Face tokens in UI state."""
+    env = dict(base_env or os.environ)
+    env["AIC_WORKER_STATE_FILE"] = str(AUTOMATION_STATE_FILE)
+    env["PREFECT_API_URL"] = f"{PREFECT_SERVER_URL}/api"
+    # HF_TOKEN, if present, is inherited only through the process environment.
+    # Streamlit widgets/session state never ask for or persist a token.
+    return env
+
+
+def read_automation_status() -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    if AUTOMATION_STATE_FILE.exists():
+        try:
+            state = json.loads(AUTOMATION_STATE_FILE.read_text())
+        except Exception:
+            state = {}
+    if AUTOMATION_PID_FILE.exists():
+        try:
+            pid = int(AUTOMATION_PID_FILE.read_text().strip())
+            os.kill(pid, 0)
+            state["pid"] = pid
+            state["running"] = True
+        except Exception:
+            state["running"] = False
+    return state
 
 
 def build_team_slot_summary(
