@@ -92,6 +92,87 @@ def folder_inventory(folder: Path) -> dict[str, Any]:
     return {"file_count": len(files), "files": files}
 
 
+
+def reconcile_queue_results(
+    *,
+    manifest_path: Path,
+    batch_id: str,
+    queue_root: Path,
+    expected_configs: Sequence[Path],
+) -> dict[str, str]:
+    """Reconcile expected private-batch configs against done/failed queue dirs."""
+    from aic_collector.job_queue.layout import QueueState, queue_dir
+
+    result: dict[str, str] = {}
+    for config_path in expected_configs:
+        name = config_path.name
+        parts = name.removesuffix(".yaml").split("_")
+        task_type = parts[1] if len(parts) >= 3 else "sfp"
+        item_id = name.removesuffix(".yaml")
+        done_path = queue_dir(queue_root, task_type, QueueState.DONE) / name
+        failed_path = queue_dir(queue_root, task_type, QueueState.FAILED) / name
+        if done_path.exists():
+            append_event(
+                manifest_path,
+                item_id=item_id,
+                state="worker_finished",
+                batch_id=batch_id,
+                queue_path=str(done_path),
+            )
+            append_event(
+                manifest_path,
+                item_id=item_id,
+                state="reconciled",
+                batch_id=batch_id,
+                queue_path=str(done_path),
+            )
+            result[item_id] = "reconciled"
+        elif failed_path.exists():
+            append_event(
+                manifest_path,
+                item_id=item_id,
+                state="worker_failed",
+                batch_id=batch_id,
+                queue_path=str(failed_path),
+            )
+            result[item_id] = "worker_failed"
+        else:
+            append_event(
+                manifest_path,
+                item_id=item_id,
+                state="reconcile_failed",
+                batch_id=batch_id,
+                expected_config=str(config_path),
+            )
+            result[item_id] = "reconcile_failed"
+    return result
+
+
+def validate_run_artifacts(run_dir: Path, *, collect_episode: bool = True) -> dict[str, Any]:
+    """Check collected run output before conversion/staging cleanup can proceed."""
+    checks: list[dict[str, Any]] = []
+
+    def check(name: str, ok: bool, detail: str = "") -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    check("run_dir", run_dir.exists(), str(run_dir))
+    mcap_files = list(run_dir.rglob("*.mcap")) if run_dir.exists() else []
+    check("mcap", bool(mcap_files), f"{len(mcap_files)} files")
+    tags = run_dir / "tags.json"
+    trial_tags = list(run_dir.glob("trial_*_score*/tags.json")) if run_dir.exists() else []
+    check("tags", tags.exists() or bool(trial_tags), "tags.json or trial tags")
+    validation_path = run_dir / "validation.json"
+    if validation_path.exists():
+        try:
+            validation = json.loads(validation_path.read_text())
+            check("validation", bool(validation.get("ok", validation.get("success", False))), str(validation_path))
+        except Exception as exc:
+            check("validation", False, f"invalid json: {exc}")
+    if collect_episode:
+        episode_dirs = list(run_dir.rglob("episode")) if run_dir.exists() else []
+        check("episode", bool(episode_dirs), "episode directory")
+    return {"ok": all(item["ok"] for item in checks), "checks": checks}
+
 def stage_run_artifacts(*, run_dir: Path, staging_root: Path, item_id: str) -> Path:
     """Copy run artifacts into converter staging without mutating source data."""
     if not run_dir.exists():

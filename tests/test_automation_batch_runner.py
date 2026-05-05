@@ -155,3 +155,49 @@ def test_cleanup_deletes_only_remote_verified_manifest_paths(tmp_path: Path) -> 
     assert unsafe.exists()
     assert not safe.exists()
     assert materialize(manifest)["safe"]["state"] == "cleanup_done"
+
+
+def test_reconcile_queue_results_records_done_and_failed(tmp_path: Path) -> None:
+    from aic_collector.automation.batch_runner import reconcile_queue_results
+    from aic_collector.job_queue import QueueState, queue_dir
+
+    manifest = tmp_path / "manifest.jsonl"
+    queue_root = tmp_path / "queue"
+    done = queue_dir(queue_root, "sfp", QueueState.DONE)
+    failed = queue_dir(queue_root, "sfp", QueueState.FAILED)
+    done.mkdir(parents=True)
+    failed.mkdir(parents=True)
+    done_cfg = done / "config_sfp_000000.yaml"
+    failed_cfg = failed / "config_sfp_000001.yaml"
+    done_cfg.write_text("{}")
+    failed_cfg.write_text("{}")
+    append_event(manifest, item_id="config_sfp_000000", state="planned", batch_id="b1")
+    append_event(manifest, item_id="config_sfp_000000", state="worker_started", batch_id="b1")
+    append_event(manifest, item_id="config_sfp_000001", state="planned", batch_id="b1")
+    append_event(manifest, item_id="config_sfp_000001", state="worker_started", batch_id="b1")
+
+    result = reconcile_queue_results(
+        manifest_path=manifest,
+        batch_id="b1",
+        queue_root=queue_root,
+        expected_configs=[queue_root / "sfp/pending/config_sfp_000000.yaml", queue_root / "sfp/pending/config_sfp_000001.yaml"],
+    )
+
+    assert result == {"config_sfp_000000": "reconciled", "config_sfp_000001": "worker_failed"}
+    assert materialize(manifest)["config_sfp_000000"]["state"] == "reconciled"
+    assert materialize(manifest)["config_sfp_000001"]["state"] == "worker_failed"
+
+
+def test_validate_run_artifacts_requires_mcap_tags_and_episode(tmp_path: Path) -> None:
+    from aic_collector.automation.batch_runner import validate_run_artifacts
+
+    run_dir = tmp_path / "run_1"
+    (run_dir / "bag").mkdir(parents=True)
+    (run_dir / "bag/data.mcap").write_bytes(b"mcap")
+    (run_dir / "tags.json").write_text("{}")
+    (run_dir / "episode").mkdir()
+    (run_dir / "validation.json").write_text('{"success": true}')
+
+    assert validate_run_artifacts(run_dir)["ok"] is True
+    (run_dir / "bag/data.mcap").unlink()
+    assert validate_run_artifacts(run_dir)["ok"] is False
