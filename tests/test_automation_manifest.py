@@ -60,3 +60,50 @@ def test_invalid_forward_or_backward_transition_is_rejected(tmp_path: Path) -> N
 
     assert materialize_latest(manifest_path)["batch-001"].state == "worker_started"
     assert len(manifest_path.read_text(encoding="utf-8").splitlines()) == 2
+
+from aic_collector.automation.manifest import CleanupNotAllowedError, record_cleanup_tombstone  # noqa: E402
+
+
+def test_cleanup_gate_requires_remote_verified_and_records_tombstone(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.jsonl"
+    item_id = "batch-001"
+    append_event(manifest_path, item_id=item_id, state="planned")
+    append_event(manifest_path, item_id=item_id, state="worker_started")
+
+    before = manifest_path.read_text(encoding="utf-8")
+    try:
+        record_cleanup_tombstone(
+            manifest_path,
+            item_id=item_id,
+            deleted_paths=[tmp_path / "collected"],
+        )
+    except CleanupNotAllowedError:
+        pass
+    else:  # pragma: no cover - failure path assertion
+        raise AssertionError("cleanup before remote_verified must be refused")
+    assert manifest_path.read_text(encoding="utf-8") == before
+
+    for state in (
+        "worker_finished",
+        "reconciled",
+        "collected_validated",
+        "staged",
+        "converted",
+        "uploaded",
+        "remote_verified",
+    ):
+        append_event(manifest_path, item_id=item_id, state=state)
+
+    tombstone = record_cleanup_tombstone(
+        manifest_path,
+        item_id=item_id,
+        deleted_paths=[tmp_path / "collected", tmp_path / "staged"],
+    )
+
+    latest = materialize_latest(manifest_path)[item_id]
+    assert tombstone.state == "cleanup_done"
+    assert latest.state == "cleanup_done"
+    assert latest.evidence["deleted_paths"] == [
+        str(tmp_path / "collected"),
+        str(tmp_path / "staged"),
+    ]
