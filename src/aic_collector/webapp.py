@@ -2699,6 +2699,106 @@ if st is not None:
                             moved_total += _recover(exec_queue_root, tt)
                         st.success(f"{moved_total}개 복구됨")
                         st.rerun()
+
+        st.divider()
+        st.markdown("### 🤗 Batch → LeRobot → Hugging Face 자동화")
+        st.caption(
+            "자동화는 일반 워커와 다른 `/tmp/aic_automation_*` PID/log/state 파일을 사용합니다. "
+            "HF 토큰은 `HF_TOKEN` 또는 `huggingface-cli login`에서만 읽고 UI에 저장하지 않습니다."
+        )
+        automation_status = read_automation_status()
+        if automation_status.get("running"):
+            st.success(f"● 자동화 실행 중 (PID: {automation_status.get('pid')})")
+            if st.button("⏹ 자동화 정지", key="automation_stop"):
+                try:
+                    import signal as _signal
+                    pid = int(automation_status["pid"])
+                    os.killpg(os.getpgid(pid), _signal.SIGTERM)
+                    time.sleep(1)
+                    AUTOMATION_PID_FILE.unlink(missing_ok=True)
+                    st.success("자동화 중지됨")
+                    st.rerun(scope="app")
+                except Exception as exc:
+                    st.warning(f"자동화 정지 실패: {type(exc).__name__}: {exc}")
+        else:
+            col_batch, col_repeat = st.columns(2)
+            with col_batch:
+                automation_batch_size = st.number_input(
+                    "Batch size (episodes)", min_value=1, max_value=1000, value=5, step=1, key="automation_batch_size"
+                )
+            with col_repeat:
+                automation_repeat_count = st.number_input(
+                    "Repeat count", min_value=1, max_value=100000, value=1, step=1, key="automation_repeat_count"
+                )
+            automation_hf_repo_id = st.text_input(
+                "HF dataset repo id", key="automation_hf_repo_id", placeholder="org_or_user/dataset"
+            )
+            with st.expander("자동화 경로", expanded=False):
+                automation_queue_root = Path(st.text_input(
+                    "Private queue root",
+                    value=str(PROJECT_DIR / "configs/automation_batches/ui_batch"),
+                    key="automation_queue_root",
+                ))
+                automation_output_root = Path(st.text_input(
+                    "Private output root",
+                    value=str(Path.home() / "aic_automation_e2e"),
+                    key="automation_output_root",
+                ))
+                automation_staging_root = Path(st.text_input(
+                    "Staging root",
+                    value="/tmp/aic_automation_stage",
+                    key="automation_staging_root",
+                ))
+                automation_manifest_path = Path(st.text_input(
+                    "Manifest JSONL",
+                    value=str(PROJECT_DIR / "configs/automation_batches/manifest.jsonl"),
+                    key="automation_manifest_path",
+                ))
+                automation_converter_path = Path(st.text_input(
+                    "rosbag-to-lerobot path",
+                    value=str(PROJECT_DIR / "third_party/rosbag-to-lerobot"),
+                    key="automation_converter_path",
+                ))
+            if st.button("▶ 자동화 시작", type="primary", key="automation_start"):
+                if not automation_hf_repo_id.strip():
+                    st.error("HF dataset repo id가 필요합니다.")
+                else:
+                    try:
+                        cmd = build_automation_command(
+                            batch_size=int(automation_batch_size),
+                            hf_repo_id=automation_hf_repo_id.strip(),
+                            queue_root=automation_queue_root,
+                            output_root=automation_output_root,
+                            staging_root=automation_staging_root,
+                            manifest_path=automation_manifest_path,
+                            converter_path=automation_converter_path,
+                            repeat_count=int(automation_repeat_count),
+                            policy=st.session_state.get("exec_policy", "cheatcode"),
+                        )
+                        AUTOMATION_LOG_FILE.write_text("")
+                        proc = subprocess.Popen(
+                            cmd,
+                            stdout=open(AUTOMATION_LOG_FILE, "a"),
+                            stderr=subprocess.STDOUT,
+                            cwd=str(PROJECT_DIR),
+                            start_new_session=True,
+                            env=build_automation_env(),
+                        )
+                        AUTOMATION_PID_FILE.write_text(str(proc.pid))
+                        st.success("자동화 시작됨. 자동화 로그에서 진행을 확인하세요.")
+                        time.sleep(1)
+                        st.rerun(scope="app")
+                    except Exception as exc:
+                        st.error(f"자동화 시작 실패: {type(exc).__name__}: {exc}")
+
+        if AUTOMATION_STATE_FILE.exists():
+            try:
+                st.json(json.loads(AUTOMATION_STATE_FILE.read_text()))
+            except Exception:
+                pass
+        if AUTOMATION_LOG_FILE.exists():
+            with st.expander("📜 자동화 로그", expanded=False):
+                st.code(AUTOMATION_LOG_FILE.read_text()[-8000:] or "(empty)")
     
         # 실시간 로그
         st.divider()
