@@ -1,19 +1,3 @@
-"""Automation pipeline helpers."""
+"""Batch automation helpers for AIC collection → LeRobot → Hugging Face."""
 
-from aic_collector.automation.manifest import (
-    CleanupNotAllowedError,
-    ManifestEntry,
-    ManifestTransitionError,
-    append_event,
-    materialize_latest,
-    record_cleanup_tombstone,
-)
-
-__all__ = [
-    "CleanupNotAllowedError",
-    "ManifestEntry",
-    "ManifestTransitionError",
-    "append_event",
-    "materialize_latest",
-    "record_cleanup_tombstone",
-]
+__all__ = []

@@ -1,13 +1,18 @@
+"""Append-only automation manifest.
+
+The manifest is the safety ledger for batch automation.  Queue state can prove a
+config finished locally, but only this manifest can make cleanup eligible after
+remote Hugging Face verification has been recorded.
+"""
+
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
-STATE_ORDER = (
+FORWARD_STATES: tuple[str, ...] = (
     "planned",
     "worker_started",
     "worker_finished",
@@ -20,22 +25,87 @@ STATE_ORDER = (
     "cleanup_eligible",
     "cleanup_done",
 )
+FAILURE_STATES: frozenset[str] = frozenset(
+    {
+        "worker_failed",
+        "reconcile_failed",
+        "validation_failed",
+        "stage_failed",
+        "convert_failed",
+        "upload_failed",
+        "remote_verify_failed",
+        "cleanup_failed",
+    }
+)
+_INITIAL_STATES: frozenset[str] = frozenset({"planned", "uploaded", "remote_verified"})
 
 
-class ManifestTransitionError(ValueError):
-    """Raised when a manifest event would violate the batch state machine."""
+class InvalidTransition(ValueError):
+    """Raised when a manifest item attempts an unsafe state transition."""
 
 
-class CleanupNotAllowedError(ValueError):
-    """Raised when cleanup is requested before remote verification exists."""
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-@dataclass(frozen=True)
-class ManifestEntry:
-    item_id: str
-    state: str
-    evidence: dict[str, Any]
-    recorded_at: str
+def read_events(manifest_path: Path) -> list[dict[str, Any]]:
+    """Read JSONL manifest events, returning an empty list for a new manifest."""
+    if not manifest_path.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    for line_no, line in enumerate(manifest_path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError as exc:  # pragma: no cover - defensive corruption guard
+            raise ValueError(f"Invalid manifest JSON at {manifest_path}:{line_no}") from exc
+        if not isinstance(event, dict):
+            raise ValueError(f"Invalid manifest event at {manifest_path}:{line_no}")
+        events.append(event)
+    return events
+
+
+def materialize(manifest_path: Path) -> dict[str, dict[str, Any]]:
+    """Return latest event by item id."""
+    latest: dict[str, dict[str, Any]] = {}
+    for event in read_events(manifest_path):
+        item_id = str(event.get("item_id", ""))
+        if not item_id:
+            continue
+        latest[item_id] = event
+    return latest
+
+
+def latest_event(manifest_path: Path, item_id: str) -> dict[str, Any] | None:
+    return materialize(manifest_path).get(item_id)
+
+
+def _validate_transition(previous_state: str | None, next_state: str) -> None:
+    if next_state not in FORWARD_STATES and next_state not in FAILURE_STATES:
+        raise InvalidTransition(f"Unknown manifest state: {next_state!r}")
+    if previous_state is None:
+        if next_state not in _INITIAL_STATES:
+            raise InvalidTransition(f"Initial state cannot be {next_state!r}")
+        return
+    if previous_state == next_state:
+        return
+    if next_state in FAILURE_STATES:
+        return
+    if previous_state in FAILURE_STATES:
+        raise InvalidTransition(f"Cannot transition from failure state {previous_state!r} to {next_state!r}")
+    try:
+        previous_index = FORWARD_STATES.index(previous_state)
+        next_index = FORWARD_STATES.index(next_state)
+    except ValueError as exc:
+        raise InvalidTransition(f"Invalid transition {previous_state!r} -> {next_state!r}") from exc
+    if next_index != previous_index + 1:
+        # cleanup_done may be appended directly by cleanup after remote verification;
+        # cleanup_eligible is useful evidence but not mandatory for safe deletion.
+        if previous_state == "remote_verified" and next_state == "cleanup_done":
+            return
+        raise InvalidTransition(f"Invalid transition {previous_state!r} -> {next_state!r}")
 
 
 def append_event(
@@ -43,82 +113,36 @@ def append_event(
     *,
     item_id: str,
     state: str,
-    evidence: dict[str, Any] | None = None,
-) -> ManifestEntry:
-    _validate_transition(manifest_path, item_id=item_id, state=state)
-    entry = ManifestEntry(
-        item_id=item_id,
-        state=state,
-        evidence=dict(evidence or {}),
-        recorded_at=datetime.now(UTC).isoformat(),
-    )
+    batch_id: str | None = None,
+    **payload: Any,
+) -> dict[str, Any]:
+    """Append a validated event.
+
+    Re-appending the current state is idempotent and returns the existing latest
+    event without writing a duplicate line.
+    """
+    latest = latest_event(manifest_path, item_id)
+    previous_state = str(latest["state"]) if latest else None
+    _validate_transition(previous_state, state)
+    if latest is not None and latest.get("state") == state:
+        return latest
+
+    event: dict[str, Any] = {
+        "schema_version": 1,
+        "timestamp": _now_iso(),
+        "item_id": item_id,
+        "state": state,
+    }
+    if batch_id is not None:
+        event["batch_id"] = batch_id
+    event.update(payload)
+
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with manifest_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(_entry_to_dict(entry), sort_keys=True) + "\n")
-    return entry
+        fh.write(json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n")
+    return event
 
 
-def materialize_latest(manifest_path: Path) -> dict[str, ManifestEntry]:
-    latest: dict[str, ManifestEntry] = {}
-    if not manifest_path.exists():
-        return latest
-    for line in manifest_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        raw = json.loads(line)
-        entry = ManifestEntry(
-            item_id=raw["item_id"],
-            state=raw["state"],
-            evidence=dict(raw.get("evidence") or {}),
-            recorded_at=raw["recorded_at"],
-        )
-        latest[entry.item_id] = entry
-    return latest
-
-
-def record_cleanup_tombstone(
-    manifest_path: Path,
-    *,
-    item_id: str,
-    deleted_paths: list[Path],
-) -> ManifestEntry:
-    latest = materialize_latest(manifest_path).get(item_id)
-    if latest is None or latest.state != "remote_verified":
-        raise CleanupNotAllowedError(
-            f"cleanup requires latest state remote_verified for {item_id}"
-        )
-
-    append_event(manifest_path, item_id=item_id, state="cleanup_eligible")
-    return append_event(
-        manifest_path,
-        item_id=item_id,
-        state="cleanup_done",
-        evidence={"deleted_paths": [str(path) for path in deleted_paths]},
-    )
-
-
-def _entry_to_dict(entry: ManifestEntry) -> dict[str, Any]:
-    return {
-        "item_id": entry.item_id,
-        "state": entry.state,
-        "evidence": entry.evidence,
-        "recorded_at": entry.recorded_at,
-    }
-
-
-def _validate_transition(manifest_path: Path, *, item_id: str, state: str) -> None:
-    if state not in STATE_ORDER:
-        raise ManifestTransitionError(f"unknown manifest state: {state}")
-
-    latest = materialize_latest(manifest_path).get(item_id)
-    if latest is None:
-        if state != STATE_ORDER[0]:
-            raise ManifestTransitionError("first manifest state must be planned")
-        return
-
-    current_index = STATE_ORDER.index(latest.state)
-    next_index = STATE_ORDER.index(state)
-    if next_index not in {current_index, current_index + 1}:
-        raise ManifestTransitionError(
-            f"invalid transition for {item_id}: {latest.state} -> {state}"
-        )
+def cleanup_ready_items(manifest_path: Path) -> list[dict[str, Any]]:
+    """Return latest manifest entries that may be deleted locally."""
+    return [event for event in materialize(manifest_path).values() if event.get("state") == "remote_verified"]
