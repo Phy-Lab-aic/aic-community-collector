@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +126,60 @@ HIDDEN_POLICIES = {
 WORKER_STATE_FILE = Path("/tmp/aic_worker_state.json")
 WORKER_PID_FILE = Path("/tmp/aic_worker_pid.txt")
 WORKER_LOG_FILE = Path("/tmp/aic_worker_run.log")
+
+# Batch automation runner files stay isolated from the normal queue worker UI.
+AUTOMATION_PID_FILE = Path("/tmp/aic_automation_pid.txt")
+AUTOMATION_STATUS_FILE = Path("/tmp/aic_automation_status.json")
+AUTOMATION_LOG_FILE = Path("/tmp/aic_automation_run.log")
+AUTOMATION_WORKER_STATE_FILE = Path("/tmp/aic_automation_worker_state.json")
+
+
+@dataclass(frozen=True)
+class AutomationRunnerCommand:
+    """Command/env contract for the batch automation supervisor subprocess."""
+
+    command: list[str]
+    env: dict[str, str]
+    pid_file: Path
+    status_file: Path
+    log_file: Path
+    worker_state_file: Path
+
+
+def build_automation_runner_command(
+    *,
+    batch_size: int,
+    hf_repo_id: str,
+    queue_root: str | Path,
+    output_root: str | Path,
+    pid_file: Path = AUTOMATION_PID_FILE,
+    status_file: Path = AUTOMATION_STATUS_FILE,
+    log_file: Path = AUTOMATION_LOG_FILE,
+    worker_state_file: Path = AUTOMATION_WORKER_STATE_FILE,
+    env: Mapping[str, str] | None = None,
+) -> AutomationRunnerCommand:
+    """Build the isolated automation runner command used by Streamlit controls."""
+    command = [
+        "uv", "run", "aic-automation-batch",
+        "--batch-size", str(batch_size),
+        "--hf-repo-id", hf_repo_id,
+        "--queue-root", str(queue_root),
+        "--output-root", str(output_root),
+        "--pid-file", str(pid_file),
+        "--status-file", str(status_file),
+        "--log-file", str(log_file),
+        "--worker-state-file", str(worker_state_file),
+    ]
+    runner_env = dict(os.environ if env is None else env)
+    runner_env["AIC_WORKER_STATE_FILE"] = str(worker_state_file)
+    return AutomationRunnerCommand(
+        command=command,
+        env=runner_env,
+        pid_file=pid_file,
+        status_file=status_file,
+        log_file=log_file,
+        worker_state_file=worker_state_file,
+    )
 
 # Prefect 서버
 PREFECT_SERVER_URL = "http://127.0.0.1:4200"
