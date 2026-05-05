@@ -12,12 +12,14 @@ dependencies = [
     "scipy",
     "prefect>=3.0",
     "fakeredis<2.27",
+    "huggingface_hub",
 ]
 
 [project.scripts]
 aic-collector = "aic_collector.webapp:main"
 aic-prefect-run = "aic_collector.prefect.serve:main"
 aic-collector-worker = "aic_collector.job_queue.consumer_cli:main"
+aic-automation-batch = "aic_collector.automation.batch_runner:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aic_collector"]
