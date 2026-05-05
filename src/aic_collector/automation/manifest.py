@@ -8,6 +8,7 @@ remote Hugging Face verification has been recorded.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -40,8 +41,25 @@ FAILURE_STATES: frozenset[str] = frozenset(
 _INITIAL_STATES: frozenset[str] = frozenset({"planned", "uploaded", "remote_verified"})
 
 
-class InvalidTransition(ValueError):
+class ManifestTransitionError(ValueError):
     """Raised when a manifest item attempts an unsafe state transition."""
+
+
+class InvalidTransition(ManifestTransitionError):
+    """Backward-compatible alias for invalid manifest transitions."""
+
+
+class CleanupNotAllowedError(ValueError):
+    """Raised when cleanup is attempted before remote verification."""
+
+
+@dataclass(frozen=True)
+class ManifestEntry:
+    item_id: str
+    state: str
+    evidence: dict[str, Any]
+    recorded_at: str
+
 
 
 def _now_iso() -> str:
@@ -80,6 +98,26 @@ def materialize(manifest_path: Path) -> dict[str, dict[str, Any]]:
 
 def latest_event(manifest_path: Path, item_id: str) -> dict[str, Any] | None:
     return materialize(manifest_path).get(item_id)
+
+
+def materialize_latest(manifest_path: Path) -> dict[str, ManifestEntry]:
+    """Return latest manifest entries in the dataclass shape used by tests/UI."""
+    latest: dict[str, ManifestEntry] = {}
+    for item_id, event in materialize(manifest_path).items():
+        evidence = event.get("evidence")
+        if not isinstance(evidence, dict):
+            evidence = {
+                key: value
+                for key, value in event.items()
+                if key not in {"schema_version", "timestamp", "item_id", "state", "batch_id"}
+            }
+        latest[item_id] = ManifestEntry(
+            item_id=item_id,
+            state=str(event.get("state", "")),
+            evidence=dict(evidence),
+            recorded_at=str(event.get("timestamp", "")),
+        )
+    return latest
 
 
 def _validate_transition(previous_state: str | None, next_state: str) -> None:
@@ -146,3 +184,23 @@ def append_event(
 def cleanup_ready_items(manifest_path: Path) -> list[dict[str, Any]]:
     """Return latest manifest entries that may be deleted locally."""
     return [event for event in materialize(manifest_path).values() if event.get("state") == "remote_verified"]
+
+
+def record_cleanup_tombstone(
+    manifest_path: Path,
+    *,
+    item_id: str,
+    deleted_paths: list[Path] | tuple[Path, ...] | list[str] | tuple[str, ...],
+) -> ManifestEntry:
+    """Append a cleanup tombstone only after remote verification evidence exists."""
+    latest = latest_event(manifest_path, item_id)
+    if latest is None or latest.get("state") != "remote_verified":
+        raise CleanupNotAllowedError(f"{item_id} is not remote_verified")
+    event = append_event(
+        manifest_path,
+        item_id=item_id,
+        state="cleanup_done",
+        batch_id=latest.get("batch_id"),
+        evidence={"deleted_paths": [str(path) for path in deleted_paths]},
+    )
+    return materialize_latest(manifest_path)[item_id]

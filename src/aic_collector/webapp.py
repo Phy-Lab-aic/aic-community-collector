@@ -132,6 +132,7 @@ AUTOMATION_PID_FILE = Path("/tmp/aic_automation_pid.txt")
 AUTOMATION_STATUS_FILE = Path("/tmp/aic_automation_status.json")
 AUTOMATION_LOG_FILE = Path("/tmp/aic_automation_run.log")
 AUTOMATION_WORKER_STATE_FILE = Path("/tmp/aic_automation_worker_state.json")
+AUTOMATION_STATE_FILE = AUTOMATION_WORKER_STATE_FILE
 
 
 @dataclass(frozen=True)
@@ -180,6 +181,40 @@ def build_automation_runner_command(
         log_file=log_file,
         worker_state_file=worker_state_file,
     )
+
+
+def build_automation_command(
+    *,
+    batch_size: int,
+    hf_repo_id: str,
+    queue_root: str | Path,
+    output_root: str | Path,
+    staging_root: str | Path,
+    manifest_path: str | Path,
+    converter_path: str | Path,
+    repeat_count: int = 1,
+    worker_state_file: Path = AUTOMATION_STATE_FILE,
+) -> list[str]:
+    """Build the public batch automation command without persisting secrets."""
+    return [
+        "uv", "run", "aic-automation-batch",
+        "--batch-size", str(batch_size),
+        "--hf-repo-id", hf_repo_id,
+        "--queue-root", str(queue_root),
+        "--output-root", str(output_root),
+        "--staging-root", str(staging_root),
+        "--manifest", str(manifest_path),
+        "--converter-path", str(converter_path),
+        "--repeat-count", str(repeat_count),
+        "--worker-state-file", str(worker_state_file),
+    ]
+
+
+def build_automation_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return automation subprocess env; HF_TOKEN is inherited, not copied into UI state."""
+    runner_env = dict(os.environ if env is None else env)
+    runner_env["AIC_WORKER_STATE_FILE"] = str(AUTOMATION_STATE_FILE)
+    return runner_env
 
 # Prefect 서버
 PREFECT_SERVER_URL = "http://127.0.0.1:4200"

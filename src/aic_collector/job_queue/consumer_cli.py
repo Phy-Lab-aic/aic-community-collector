@@ -145,7 +145,7 @@ def main() -> int:
         "--state-file", default=None,
         help=(
             "워커 상태 JSON 파일. 기본은 /tmp/aic_worker_state.json, "
-            "자동화 배치는 AIC_WORKER_STATE_FILE 또는 이 옵션으로 격리.
+            "자동화 배치는 AIC_WORKER_STATE_FILE 또는 이 옵션으로 격리."
         ),
     )
     parser.add_argument(
