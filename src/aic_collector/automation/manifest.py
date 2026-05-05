@@ -26,6 +26,10 @@ class ManifestTransitionError(ValueError):
     """Raised when a manifest event would violate the batch state machine."""
 
 
+class CleanupNotAllowedError(ValueError):
+    """Raised when cleanup is requested before remote verification exists."""
+
+
 @dataclass(frozen=True)
 class ManifestEntry:
     item_id: str
@@ -70,6 +74,27 @@ def materialize_latest(manifest_path: Path) -> dict[str, ManifestEntry]:
         )
         latest[entry.item_id] = entry
     return latest
+
+
+def record_cleanup_tombstone(
+    manifest_path: Path,
+    *,
+    item_id: str,
+    deleted_paths: list[Path],
+) -> ManifestEntry:
+    latest = materialize_latest(manifest_path).get(item_id)
+    if latest is None or latest.state != "remote_verified":
+        raise CleanupNotAllowedError(
+            f"cleanup requires latest state remote_verified for {item_id}"
+        )
+
+    append_event(manifest_path, item_id=item_id, state="cleanup_eligible")
+    return append_event(
+        manifest_path,
+        item_id=item_id,
+        state="cleanup_done",
+        evidence={"deleted_paths": [str(path) for path in deleted_paths]},
+    )
 
 
 def _entry_to_dict(entry: ManifestEntry) -> dict[str, Any]:
