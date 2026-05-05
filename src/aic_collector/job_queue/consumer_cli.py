@@ -35,6 +35,7 @@ from aic_collector.job_queue.worker import (
 # path via --state-file or AIC_WORKER_STATE_FILE to avoid colliding with the
 # normal Streamlit worker status.
 WORKER_STATE_FILE = Path("/tmp/aic_worker_state.json")
+DEFAULT_WORKER_STATE_FILE = WORKER_STATE_FILE
 
 
 def resolve_worker_state_file(cli_state_file: str | None) -> Path:
