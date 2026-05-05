@@ -31,26 +31,23 @@ from aic_collector.job_queue.worker import (
     recover_running_to_pending,
 )
 
-# 진행 상태 공유 파일 (UI가 읽음)
-DEFAULT_WORKER_STATE_FILE = Path("/tmp/aic_worker_state.json")
-WORKER_STATE_FILE = DEFAULT_WORKER_STATE_FILE
+# 진행 상태 공유 파일 (UI가 읽음). Automation runners may override this
+# path via --state-file or AIC_WORKER_STATE_FILE to avoid colliding with the
+# normal Streamlit worker status.
+WORKER_STATE_FILE = Path("/tmp/aic_worker_state.json")
 
 
-def resolve_worker_state_file(
-    cli_state_file: str | Path | None = None,
-    environ: Mapping[str, str] | None = None,
-) -> Path:
-    """Return the worker state file, preferring CLI over env over default."""
+def resolve_worker_state_file(cli_state_file: str | None) -> Path:
+    """Resolve worker state-file precedence: CLI > env > legacy default."""
     if cli_state_file:
         return Path(cli_state_file).expanduser()
-    env = os.environ if environ is None else environ
-    env_state_file = env.get("AIC_WORKER_STATE_FILE")
-    if env_state_file:
-        return Path(env_state_file).expanduser()
-    return DEFAULT_WORKER_STATE_FILE
+    env_path = os.environ.get("AIC_WORKER_STATE_FILE")
+    if env_path:
+        return Path(env_path).expanduser()
+    return WORKER_STATE_FILE
 
 
-def _write_state(state: dict, state_file: Path | None = None) -> None:
+def _write_state(state: dict, *, state_file: Path | None = None) -> None:
     target = state_file or WORKER_STATE_FILE
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -59,7 +56,7 @@ def _write_state(state: dict, state_file: Path | None = None) -> None:
         pass
 
 
-def _read_state(state_file: Path | None = None) -> dict:
+def _read_state(*, state_file: Path | None = None) -> dict:
     target = state_file or WORKER_STATE_FILE
     if not target.exists():
         return {}
@@ -147,8 +144,8 @@ def main() -> int:
     parser.add_argument(
         "--state-file", default=None,
         help=(
-            "워커 진행 상태 JSON 파일. 미지정 시 AIC_WORKER_STATE_FILE, "
-            "그 다음 /tmp/aic_worker_state.json 사용."
+            "워커 상태 JSON 파일. 기본은 /tmp/aic_worker_state.json, "
+            "자동화 배치는 AIC_WORKER_STATE_FILE 또는 이 옵션으로 격리.
         ),
     )
     parser.add_argument(
@@ -161,7 +158,7 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
-    worker_state_file = resolve_worker_state_file(args.state_file)
+    state_file = resolve_worker_state_file(args.state_file)
 
     root = Path(args.root).expanduser().resolve()
     if not root.exists():
@@ -224,7 +221,7 @@ def main() -> int:
             s["elapsed_sec"] = int(time.time() - t0)
         return s
 
-    _write_state(_snapshot(status="running"), worker_state_file)
+    _write_state(_snapshot(status="running"), state_file=state_file)
 
     try:
         while True:
@@ -242,7 +239,7 @@ def main() -> int:
                 current=claim.name,
                 current_path=str(claim.running_path),
                 current_started_at=claim_started_at_iso,
-            ), worker_state_file)
+            ), state_file=state_file)
 
             run_tag = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{claim.task_type}_{claim.sample_index:04d}"
             # task별 policy dispatch — 미지정 시 --policy 값 사용
@@ -293,7 +290,7 @@ def main() -> int:
         elapsed = int(time.time() - t0)
         counts_after = {t: queue_counts(root, t) for t in (targets or list(TASK_TYPES))}
 
-        _write_state(_snapshot(status="completed", finished=True), worker_state_file)
+        _write_state(_snapshot(status="completed", finished=True), state_file=state_file)
 
         print()
         print(f"=== 워커 종료: {processed}개 처리 (done={done_count}, failed={fail_count}, 소요 {elapsed}s) ===")
@@ -303,7 +300,7 @@ def main() -> int:
         return 0 if fail_count == 0 else 1
 
     except KeyboardInterrupt:
-        _write_state(_snapshot(status="interrupted", finished=True), worker_state_file)
+        _write_state(_snapshot(status="interrupted", finished=True), state_file=state_file)
         print("\n[interrupt] 워커 중단. running/에 남은 파일은 --recover로 복구 가능.")
         return 130
 
