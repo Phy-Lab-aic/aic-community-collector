@@ -1,5 +1,19 @@
 """Automation pipeline helpers."""
 
-from aic_collector.automation.manifest import ManifestEntry, append_event, materialize_latest
+from aic_collector.automation.manifest import (
+    CleanupNotAllowedError,
+    ManifestEntry,
+    ManifestTransitionError,
+    append_event,
+    materialize_latest,
+    record_cleanup_tombstone,
+)
 
-__all__ = ["ManifestEntry", "append_event", "materialize_latest"]
+__all__ = [
+    "CleanupNotAllowedError",
+    "ManifestEntry",
+    "ManifestTransitionError",
+    "append_event",
+    "materialize_latest",
+    "record_cleanup_tombstone",
+]
