@@ -7,6 +7,25 @@ from pathlib import Path
 from typing import Any
 
 
+STATE_ORDER = (
+    "planned",
+    "worker_started",
+    "worker_finished",
+    "reconciled",
+    "collected_validated",
+    "staged",
+    "converted",
+    "uploaded",
+    "remote_verified",
+    "cleanup_eligible",
+    "cleanup_done",
+)
+
+
+class ManifestTransitionError(ValueError):
+    """Raised when a manifest event would violate the batch state machine."""
+
+
 @dataclass(frozen=True)
 class ManifestEntry:
     item_id: str
@@ -22,6 +41,7 @@ def append_event(
     state: str,
     evidence: dict[str, Any] | None = None,
 ) -> ManifestEntry:
+    _validate_transition(manifest_path, item_id=item_id, state=state)
     entry = ManifestEntry(
         item_id=item_id,
         state=state,
@@ -59,3 +79,21 @@ def _entry_to_dict(entry: ManifestEntry) -> dict[str, Any]:
         "evidence": entry.evidence,
         "recorded_at": entry.recorded_at,
     }
+
+
+def _validate_transition(manifest_path: Path, *, item_id: str, state: str) -> None:
+    if state not in STATE_ORDER:
+        raise ManifestTransitionError(f"unknown manifest state: {state}")
+
+    latest = materialize_latest(manifest_path).get(item_id)
+    if latest is None:
+        if state != STATE_ORDER[0]:
+            raise ManifestTransitionError("first manifest state must be planned")
+        return
+
+    current_index = STATE_ORDER.index(latest.state)
+    next_index = STATE_ORDER.index(state)
+    if next_index not in {current_index, current_index + 1}:
+        raise ManifestTransitionError(
+            f"invalid transition for {item_id}: {latest.state} -> {state}"
+        )
