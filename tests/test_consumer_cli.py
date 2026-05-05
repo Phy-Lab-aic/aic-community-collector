@@ -64,3 +64,37 @@ def test_run_one_headless_propagates_flag(monkeypatch, tmp_path: Path) -> None:
     cmd = captured[0]
     assert "--headless" in cmd
     assert "--no-headless" not in cmd
+
+
+def test_resolve_worker_state_file_prefers_cli_over_env(monkeypatch, tmp_path: Path) -> None:
+    env_state = tmp_path / "env_state.json"
+    cli_state = tmp_path / "cli_state.json"
+    monkeypatch.setenv("AIC_WORKER_STATE_FILE", str(env_state))
+
+    assert consumer_cli.resolve_worker_state_file(str(cli_state)) == cli_state
+
+
+def test_main_uses_env_state_file_without_touching_default(monkeypatch, tmp_path: Path) -> None:
+    queue_root = tmp_path / "queue"
+    queue_root.mkdir()
+    default_state = tmp_path / "default_state.json"
+    env_state = tmp_path / "automation_worker_state.json"
+    log_path = tmp_path / "worker.log"
+    monkeypatch.setattr(consumer_cli, "DEFAULT_WORKER_STATE_FILE", default_state)
+    monkeypatch.setenv("AIC_WORKER_STATE_FILE", str(env_state))
+    monkeypatch.setattr(
+        consumer_cli.sys,
+        "argv",
+        [
+            "aic-collector-worker",
+            "--root", str(queue_root),
+            "--limit", "1",
+            "--log", str(log_path),
+        ],
+    )
+
+    rc = consumer_cli.main()
+
+    assert rc == 0
+    assert env_state.exists()
+    assert not default_state.exists()
