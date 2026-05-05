@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 FORWARD_STATES: tuple[str, ...] = (
@@ -59,7 +60,6 @@ class ManifestEntry:
     state: str
     evidence: dict[str, Any]
     recorded_at: str
-
 
 
 def _now_iso() -> str:
@@ -190,13 +190,13 @@ def record_cleanup_tombstone(
     manifest_path: Path,
     *,
     item_id: str,
-    deleted_paths: list[Path] | tuple[Path, ...] | list[str] | tuple[str, ...],
+    deleted_paths: Sequence[Path | str],
 ) -> ManifestEntry:
     """Append a cleanup tombstone only after remote verification evidence exists."""
     latest = latest_event(manifest_path, item_id)
     if latest is None or latest.get("state") != "remote_verified":
         raise CleanupNotAllowedError(f"{item_id} is not remote_verified")
-    event = append_event(
+    append_event(
         manifest_path,
         item_id=item_id,
         state="cleanup_done",
