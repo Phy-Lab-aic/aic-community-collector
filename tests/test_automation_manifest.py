@@ -9,24 +9,25 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from aic_collector.automation.manifest import (  # noqa: E402
-    CleanupNotAllowedError,
-    ManifestTransitionError,
+    InvalidTransition,
     append_event,
-    materialize_latest,
-    record_cleanup_tombstone,
+    materialize,
+    read_events,
 )
 
 
 def test_append_only_events_materialize_latest_state(tmp_path: Path) -> None:
     manifest_path = tmp_path / "manifest.jsonl"
 
-    append_event(manifest_path, item_id="batch-001", state="planned", evidence={"count": 2})
-    append_event(manifest_path, item_id="batch-001", state="worker_started", evidence={"pid": 123})
+    append_event(manifest_path, item_id="batch-001", state="planned", count=2)
+    append_event(manifest_path, item_id="batch-001", state="worker_started", pid=123)
 
-    latest = materialize_latest(manifest_path)
+    events = read_events(manifest_path)
+    latest = materialize(manifest_path)
 
-    assert latest["batch-001"].state == "worker_started"
-    assert latest["batch-001"].evidence == {"pid": 123}
+    assert [event["state"] for event in events] == ["planned", "worker_started"]
+    assert latest["batch-001"]["state"] == "worker_started"
+    assert latest["batch-001"]["pid"] == 123
     assert len(manifest_path.read_text(encoding="utf-8").splitlines()) == 2
 
 
@@ -34,15 +35,15 @@ def test_invalid_forward_or_backward_transition_is_rejected(tmp_path: Path) -> N
     manifest_path = tmp_path / "manifest.jsonl"
     append_event(manifest_path, item_id="batch-001", state="planned")
 
-    with pytest.raises(ManifestTransitionError):
+    with pytest.raises(InvalidTransition):
         append_event(manifest_path, item_id="batch-001", state="converted")
 
     append_event(manifest_path, item_id="batch-001", state="worker_started")
 
-    with pytest.raises(ManifestTransitionError):
+    with pytest.raises(InvalidTransition):
         append_event(manifest_path, item_id="batch-001", state="planned")
 
-    assert materialize_latest(manifest_path)["batch-001"].state == "worker_started"
+    assert materialize(manifest_path)["batch-001"]["state"] == "worker_started"
     assert len(manifest_path.read_text(encoding="utf-8").splitlines()) == 2
 
 
@@ -53,11 +54,12 @@ def test_cleanup_gate_requires_remote_verified_and_records_tombstone(tmp_path: P
     append_event(manifest_path, item_id=item_id, state="worker_started")
 
     before = manifest_path.read_text(encoding="utf-8")
-    with pytest.raises(CleanupNotAllowedError):
-        record_cleanup_tombstone(
+    with pytest.raises(InvalidTransition):
+        append_event(
             manifest_path,
             item_id=item_id,
-            deleted_paths=[tmp_path / "collected"],
+            state="cleanup_done",
+            deleted_paths=[str(tmp_path / "collected")],
         )
     assert manifest_path.read_text(encoding="utf-8") == before
 
@@ -72,16 +74,17 @@ def test_cleanup_gate_requires_remote_verified_and_records_tombstone(tmp_path: P
     ):
         append_event(manifest_path, item_id=item_id, state=state)
 
-    tombstone = record_cleanup_tombstone(
+    tombstone = append_event(
         manifest_path,
         item_id=item_id,
-        deleted_paths=[tmp_path / "collected", tmp_path / "staged"],
+        state="cleanup_done",
+        deleted_paths=[str(tmp_path / "collected"), str(tmp_path / "staged")],
     )
 
-    latest = materialize_latest(manifest_path)[item_id]
-    assert tombstone.state == "cleanup_done"
-    assert latest.state == "cleanup_done"
-    assert latest.evidence["deleted_paths"] == [
+    latest = materialize(manifest_path)[item_id]
+    assert tombstone["state"] == "cleanup_done"
+    assert latest["state"] == "cleanup_done"
+    assert latest["deleted_paths"] == [
         str(tmp_path / "collected"),
         str(tmp_path / "staged"),
     ]
