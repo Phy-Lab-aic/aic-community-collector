@@ -1,6 +1,7 @@
 """consumer_cli command-line plumbing tests (no real subprocess)."""
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from aic_collector.job_queue import consumer_cli
@@ -102,6 +103,20 @@ def test_main_uses_env_state_file_without_touching_default(monkeypatch, tmp_path
     assert not default_state.exists()
 
 
+def test_default_worker_batch_id_is_multi_uploader_safe(monkeypatch) -> None:
+    class FakeUuid:
+        hex = "abcdef1234567890"
+
+    monkeypatch.setattr(consumer_cli.getpass, "getuser", lambda: "user/name")
+    monkeypatch.setattr(consumer_cli.socket, "gethostname", lambda: "host.name")
+    monkeypatch.setattr(consumer_cli.os, "getpid", lambda: 12345)
+    monkeypatch.setattr(consumer_cli, "uuid4", lambda: FakeUuid())
+
+    batch_id = consumer_cli._default_worker_batch_id(datetime(2026, 5, 6, 1, 2, 3))
+
+    assert batch_id == "worker-20260506_010203-user-name-host-12345-abcdef12"
+
+
 def test_lerobot_upload_automation_runs_inside_worker_success_path(monkeypatch, tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.jsonl"
     run_tag = "20260505_120000_sfp_0001"
@@ -181,6 +196,58 @@ def test_lerobot_upload_automation_runs_inside_worker_success_path(monkeypatch, 
     ]
     assert materialize(manifest)["config_sfp_0001"]["state"] == "cleanup_done"
     assert not run_dir.exists()
+
+
+def test_upload_lerobot_batch_scopes_local_folder_by_batch_id(monkeypatch, tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.jsonl"
+    item_root = tmp_path / "items/config_sfp_0001"
+    item_root.mkdir(parents=True)
+    (item_root / "meta.json").write_text("{}")
+    captured: dict[str, Path | str] = {}
+
+    def fake_record_upload_and_verify(**kwargs):
+        captured["local_folder"] = kwargs["local_folder"]
+        captured["path_in_repo"] = kwargs["path_in_repo"]
+        append_event(
+            kwargs["manifest_path"],
+            item_id=kwargs["item_id"],
+            state="uploaded",
+            batch_id=kwargs["batch_id"],
+            upload={"path_in_repo": kwargs["path_in_repo"]},
+        )
+        append_event(
+            kwargs["manifest_path"],
+            item_id=kwargs["item_id"],
+            state="remote_verified",
+            batch_id=kwargs["batch_id"],
+            remote={"ok": True},
+        )
+        return {"ok": True}
+
+    monkeypatch.setattr("aic_collector.automation.batch_runner.record_upload_and_verify", fake_record_upload_and_verify)
+
+    cfg = consumer_cli.LerobotUploadConfig(
+        hf_repo_id="org/repo",
+        manifest_path=manifest,
+        staging_root=tmp_path / "stage",
+        lerobot_root=tmp_path / "lerobot",
+        converter_path=tmp_path / "converter",
+        path_prefix="worker",
+        batch_id="worker-user-host-1234-abcd",
+        cleanup_after_upload=False,
+    )
+    item = consumer_cli.PreparedLerobotItem(
+        item_id="config_sfp_0001",
+        run_dir=tmp_path / "run",
+        staged_path=tmp_path / "stage/config_sfp_0001",
+        lerobot_path=item_root,
+    )
+
+    result = consumer_cli.upload_lerobot_batch(config=cfg, items=[item], batch_index=1)
+
+    assert result["ok"] is True
+    assert captured["local_folder"] == tmp_path / "lerobot/upload_batches/worker-user-host-1234-abcd/batch_0001"
+    assert captured["path_in_repo"] == "worker/worker-user-host-1234-abcd/batch_0001"
 
 
 def test_lerobot_upload_conversion_error_is_item_failure_not_worker_crash(tmp_path: Path) -> None:

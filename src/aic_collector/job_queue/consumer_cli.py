@@ -13,9 +13,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -24,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
+from uuid import uuid4
 
 from aic_collector.job_queue.layout import TASK_TYPES
 from aic_collector.job_queue.state import queue_counts
@@ -73,6 +77,18 @@ def _item_id_from_claim(claim: ClaimedConfig) -> str:
 def _path_in_repo(prefix: str, item_id: str) -> str:
     clean_prefix = prefix.strip("/")
     return f"{clean_prefix}/{item_id}" if clean_prefix else item_id
+
+
+def _safe_batch_id_part(value: str | None, fallback: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", (value or "").strip()).strip(".-")
+    return clean or fallback
+
+
+def _default_worker_batch_id(now: datetime | None = None) -> str:
+    timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    user = _safe_batch_id_part(getpass.getuser(), "user")
+    host = _safe_batch_id_part(socket.gethostname().split(".", maxsplit=1)[0], "host")
+    return f"worker-{timestamp}-{user}-{host}-{os.getpid()}-{uuid4().hex[:8]}"
 
 
 def _append_failure_event(manifest_path: Path, *, item_id: str, state: str, batch_id: str, **payload: Any) -> None:
@@ -287,7 +303,7 @@ def upload_lerobot_batch(
 
     batch_name = f"batch_{batch_index:04d}"
     batch_item_id = f"{config.batch_id}_{batch_name}"
-    batch_folder = config.lerobot_root / "upload_batches" / batch_name
+    batch_folder = config.lerobot_root / "upload_batches" / config.batch_id / batch_name
     if batch_folder.exists():
         shutil.rmtree(batch_folder)
     batch_folder.mkdir(parents=True, exist_ok=True)
@@ -634,7 +650,7 @@ def main() -> int:
             parser.error("--upload-batch-size must be positive")
         output_root_path = Path(args.output_root).expanduser()
         manifest_path = args.automation_manifest or (output_root_path / "worker_lerobot_upload_manifest.jsonl")
-        batch_id = args.batch_id or f"worker-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        batch_id = args.batch_id or _default_worker_batch_id()
         upload_config = LerobotUploadConfig(
             hf_repo_id=args.hf_repo_id,
             manifest_path=manifest_path.expanduser(),
