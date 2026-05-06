@@ -46,6 +46,15 @@ def build_worker_command(
     task: str = "all",
     timeout: int | None = None,
     headless: bool = True,
+    hf_repo_id: str | None = None,
+    manifest_path: Path | None = None,
+    staging_root: Path | None = None,
+    lerobot_root: Path | None = None,
+    converter_path: Path | None = None,
+    hf_path_prefix: str | None = None,
+    batch_id: str | None = None,
+    upload_batch_size: int | None = None,
+    cleanup_after_upload: bool = True,
 ) -> list[str]:
     """Build an isolated worker command for one automation batch."""
     cmd = [
@@ -73,6 +82,23 @@ def build_worker_command(
     ]
     if timeout is not None and timeout > 0:
         cmd += ["--timeout", str(timeout)]
+    if hf_repo_id:
+        cmd += ["--hf-repo-id", hf_repo_id]
+        if manifest_path is not None:
+            cmd += ["--automation-manifest", str(manifest_path)]
+        if staging_root is not None:
+            cmd += ["--staging-root", str(staging_root)]
+        if lerobot_root is not None:
+            cmd += ["--lerobot-root", str(lerobot_root)]
+        if converter_path is not None:
+            cmd += ["--converter-path", str(converter_path)]
+        if hf_path_prefix:
+            cmd += ["--hf-path-prefix", hf_path_prefix]
+        if batch_id:
+            cmd += ["--batch-id", batch_id]
+        if upload_batch_size is not None:
+            cmd += ["--upload-batch-size", str(upload_batch_size)]
+        cmd += ["--cleanup-after-upload" if cleanup_after_upload else "--no-cleanup-after-upload"]
     return cmd
 
 
@@ -90,6 +116,16 @@ def folder_inventory(folder: Path) -> dict[str, Any]:
         rel = file_path.relative_to(folder).as_posix()
         files.append({"path": rel, "size": file_path.stat().st_size, "sha256": _file_digest(file_path)})
     return {"file_count": len(files), "files": files}
+
+
+def link_or_copy(src: str | Path, dst: str | Path) -> None:
+    """Hardlink large artifacts when possible, falling back to a normal copy."""
+    src_path = Path(src)
+    dst_path = Path(dst)
+    try:
+        os.link(src_path, dst_path)
+    except OSError:
+        shutil.copy2(src_path, dst_path)
 
 
 
@@ -155,6 +191,16 @@ def validate_run_artifacts(run_dir: Path, *, collect_episode: bool = True) -> di
     def check(name: str, ok: bool, detail: str = "") -> None:
         checks.append({"name": name, "ok": bool(ok), "detail": detail})
 
+    def validation_passed(validation: dict[str, Any]) -> bool:
+        if "ok" in validation or "success" in validation:
+            return bool(validation.get("ok", validation.get("success", False)))
+        if "passed_count" in validation and "total_count" in validation:
+            return int(validation.get("passed_count", -1)) == int(validation.get("total_count", 0))
+        raw_checks = validation.get("checks")
+        if isinstance(raw_checks, list) and raw_checks:
+            return all(bool(item.get("passed", item.get("ok", False))) for item in raw_checks if isinstance(item, dict))
+        return False
+
     check("run_dir", run_dir.exists(), str(run_dir))
     mcap_files = list(run_dir.rglob("*.mcap")) if run_dir.exists() else []
     check("mcap", bool(mcap_files), f"{len(mcap_files)} files")
@@ -165,7 +211,7 @@ def validate_run_artifacts(run_dir: Path, *, collect_episode: bool = True) -> di
     if validation_path.exists():
         try:
             validation = json.loads(validation_path.read_text())
-            check("validation", bool(validation.get("ok", validation.get("success", False))), str(validation_path))
+            check("validation", validation_passed(validation), str(validation_path))
         except Exception as exc:
             check("validation", False, f"invalid json: {exc}")
     if collect_episode:
@@ -174,27 +220,47 @@ def validate_run_artifacts(run_dir: Path, *, collect_episode: bool = True) -> di
     return {"ok": all(item["ok"] for item in checks), "checks": checks}
 
 def stage_run_artifacts(*, run_dir: Path, staging_root: Path, item_id: str) -> Path:
-    """Copy run artifacts into converter staging without mutating source data."""
+    """Stage one collected run in the folder layout expected by rosbag-to-lerobot."""
     if not run_dir.exists():
         raise FileNotFoundError(run_dir)
     target = staging_root / item_id
     if target.exists():
         shutil.rmtree(target)
-    target.mkdir(parents=True, exist_ok=True)
+    converter_run = target / item_id
+    converter_run.mkdir(parents=True, exist_ok=True)
+
     bag_source = run_dir / "bag"
     if bag_source.exists():
-        shutil.copytree(bag_source, target / "bag")
+        copied_mcap = False
+        for src in sorted(path for path in bag_source.iterdir() if path.is_file()):
+            link_or_copy(src, converter_run / src.name)
+            copied_mcap = copied_mcap or src.suffix == ".mcap"
+        if not copied_mcap:
+            raise FileNotFoundError(f"No MCAP files found under {bag_source}")
     else:
         mcap_files = list(run_dir.rglob("*.mcap"))
         if not mcap_files:
             raise FileNotFoundError(f"No MCAP files found under {run_dir}")
-        (target / "bag").mkdir(parents=True, exist_ok=True)
         for mcap in mcap_files:
-            shutil.copy2(mcap, target / "bag" / mcap.name)
-    for optional in ("config.yaml", "tags.json", "validation.json"):
+            link_or_copy(mcap, converter_run / mcap.name)
+
+    for optional in (
+        "config.yaml",
+        "tags.json",
+        "validation.json",
+        "policy.txt",
+        "seed.txt",
+        "scoring_run.yaml",
+        "trial_scoring.yaml",
+    ):
         src = run_dir / optional
         if src.exists():
-            shutil.copy2(src, target / optional)
+            dst_name = "scoring.yaml" if optional == "trial_scoring.yaml" else optional
+            link_or_copy(src, converter_run / dst_name)
+
+    episode_source = run_dir / "episode"
+    if episode_source.exists():
+        shutil.copytree(episode_source, converter_run / "episode", copy_function=link_or_copy)
     return target
 
 
@@ -202,15 +268,44 @@ def run_converter(*, converter_path: Path, input_path: Path, output_path: Path, 
     """Run the rosbag-to-lerobot converter entry point."""
     main_py = converter_path / "src" / "main.py"
     if not main_py.exists():
-        raise FileNotFoundError(main_py)
+        raise FileNotFoundError(
+            f"rosbag-to-lerobot converter entry point not found: {main_py}. "
+            "Install/checkout rosbag-to-lerobot at that path "
+            "(for a configured submodule, run `git submodule update --init --recursive "
+            "third_party/rosbag-to-lerobot`) or pass --converter-path to an existing checkout."
+        )
     output_path.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["INPUT_PATH"] = str(input_path)
     env["OUTPUT_PATH"] = str(output_path)
-    cmd = ["uv", "run", "python", str(main_py)]
-    if config_path is not None:
-        cmd += ["--config", str(config_path)]
-    return subprocess.run(cmd, env=env, check=False).returncode
+    pythonpath_parts = [
+        str(converter_path / "src"),
+        str(converter_path / "lerobot" / "src"),
+        str(converter_path / "docker" / "torch-stub"),
+    ]
+    if env.get("PYTHONPATH"):
+        pythonpath_parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+    generated_config_path: Path | None = None
+    effective_config_path = config_path
+    if effective_config_path is None:
+        default_config_path = converter_path / "src" / "config.json"
+        converter_config = json.loads(default_config_path.read_text())
+        task_name = converter_config.get("task") or converter_config.get("task_name") or "aic_task"
+        # The worker owns Hugging Face upload/verification.  Keep the converter
+        # local-only by avoiding a namespace-style repo_id that triggers its
+        # internal push_to_hub path.
+        converter_config["repo_id"] = task_name
+        generated_config_path = output_path / "_local_converter_config.json"
+        generated_config_path.write_text(json.dumps(converter_config), encoding="utf-8")
+        effective_config_path = generated_config_path
+
+    cmd = ["uv", "run", "python", str(main_py), str(effective_config_path)]
+    try:
+        return subprocess.run(cmd, env=env, check=False).returncode
+    finally:
+        if generated_config_path is not None:
+            generated_config_path.unlink(missing_ok=True)
 
 
 def _parse_upload_result(result: Any) -> dict[str, Any]:
@@ -264,6 +359,7 @@ def record_upload_and_verify(
     path_in_repo: str = "",
     api: Any | None = None,
     expected_paths: Sequence[str] | None = None,
+    cleanup_paths: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """Upload a converted folder, record upload evidence, then verify remote files."""
     api = api or (HfApi() if HfApi is not None else None)
@@ -302,7 +398,7 @@ def record_upload_and_verify(
             state="remote_verified",
             batch_id=batch_id,
             remote=verification,
-            cleanup_paths=[str(local_folder)],
+            cleanup_paths=[str(path) for path in (cleanup_paths or [local_folder])],
         )
     else:
         append_event(manifest_path, item_id=item_id, state="remote_verify_failed", batch_id=batch_id, remote=verification)
@@ -349,25 +445,34 @@ def resume_uploaded_remote_verification(manifest_path: Path, api: Any | None = N
 
 def cleanup_verified_paths(manifest_path: Path) -> list[str]:
     """Delete only paths listed by latest remote_verified manifest entries."""
+    protected_manifest = manifest_path.expanduser().resolve()
     deleted: list[str] = []
     for event in cleanup_ready_items(manifest_path):
         item_id = str(event["item_id"])
         paths = [str(path) for path in event.get("cleanup_paths", [])]
+        item_deleted: list[str] = []
+        skipped_paths: list[str] = []
         for raw_path in paths:
             path = Path(raw_path).expanduser()
             if not path.exists():
+                continue
+            resolved_path = path.resolve()
+            if resolved_path == protected_manifest or protected_manifest.is_relative_to(resolved_path):
+                skipped_paths.append(str(path))
                 continue
             if path.is_dir():
                 shutil.rmtree(path)
             else:
                 path.unlink()
             deleted.append(str(path))
+            item_deleted.append(str(path))
         append_event(
             manifest_path,
             item_id=item_id,
             state="cleanup_done",
             batch_id=event.get("batch_id"),
-            deleted_paths=paths,
+            deleted_paths=item_deleted,
+            skipped_paths=skipped_paths,
             deleted_at=_now_iso(),
         )
     return deleted
@@ -405,14 +510,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         state_file=args.worker_state_file,
         log_file=Path("/tmp/aic_automation_worker.log"),
         policy=args.policy,
+        hf_repo_id=args.hf_repo_id,
+        manifest_path=args.manifest,
+        staging_root=args.staging_root,
+        lerobot_root=args.staging_root / "lerobot",
+        converter_path=args.converter_path,
+        hf_path_prefix="automation",
+        batch_id=f"automation-{_now_iso()}",
+        upload_batch_size=args.batch_size,
+        cleanup_after_upload=True,
     )
     if args.dry_run:
         print(json.dumps({"worker_command": command}, ensure_ascii=False))
         return 0
 
-    # MVP runtime: resume verification/cleanup primitives are available; full config
-    # generation/converter orchestration is intentionally kept in testable helpers.
+    args.status_file.parent.mkdir(parents=True, exist_ok=True)
+    for index in range(args.repeat_count):
+        args.status_file.write_text(json.dumps({
+            "running": True,
+            "repeat_index": index + 1,
+            "repeat_count": args.repeat_count,
+            "worker_command": command,
+            "updated_at": _now_iso(),
+        }, ensure_ascii=False))
+        resume_uploaded_remote_verification(args.manifest)
+        rc = subprocess.run(command, check=False).returncode
+        if rc != 0:
+            args.status_file.write_text(json.dumps({
+                "running": False,
+                "status": "failed",
+                "return_code": rc,
+                "repeat_index": index + 1,
+                "repeat_count": args.repeat_count,
+                "updated_at": _now_iso(),
+            }, ensure_ascii=False))
+            return rc
+
     resume_uploaded_remote_verification(args.manifest)
+    args.status_file.write_text(json.dumps({
+        "running": False,
+        "status": "completed",
+        "repeat_count": args.repeat_count,
+        "updated_at": _now_iso(),
+    }, ensure_ascii=False))
     return 0
 
 

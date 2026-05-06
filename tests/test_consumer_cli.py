@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from aic_collector.job_queue import consumer_cli
+from aic_collector.automation.manifest import append_event, materialize, read_events
+from aic_collector.job_queue.worker import ClaimedConfig
 
 
 class _FakeProc:
@@ -98,3 +100,294 @@ def test_main_uses_env_state_file_without_touching_default(monkeypatch, tmp_path
     assert rc == 0
     assert env_state.exists()
     assert not default_state.exists()
+
+
+def test_lerobot_upload_automation_runs_inside_worker_success_path(monkeypatch, tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.jsonl"
+    run_tag = "20260505_120000_sfp_0001"
+    run_dir = tmp_path / "out" / f"run_{run_tag}"
+    (run_dir / "bag").mkdir(parents=True)
+    (run_dir / "bag/data.mcap").write_bytes(b"mcap")
+    (run_dir / "tags.json").write_text("{}")
+    (run_dir / "episode").mkdir()
+    (run_dir / "validation.json").write_text('{"success": true}')
+    converter_path = tmp_path / "converter"
+    (converter_path / "src").mkdir(parents=True)
+    (converter_path / "src/main.py").write_text("# fake")
+
+    def fake_converter(*, converter_path, input_path, output_path, config_path=None):
+        output_path.mkdir(parents=True)
+        (output_path / "meta.json").write_text("{}")
+        return 0
+
+    def fake_upload(**kwargs):
+        append_event(
+            kwargs["manifest_path"],
+            item_id=kwargs["item_id"],
+            state="uploaded",
+            batch_id=kwargs["batch_id"],
+            upload={"repo_id": kwargs["repo_id"], "revision": "abc123", "path_in_repo": kwargs["path_in_repo"]},
+        )
+        append_event(
+            kwargs["manifest_path"],
+            item_id=kwargs["item_id"],
+            state="remote_verified",
+            batch_id=kwargs["batch_id"],
+            remote={"ok": True, "revision": "abc123"},
+        )
+        return {"ok": True, "revision": "abc123"}
+
+    monkeypatch.setattr("aic_collector.automation.batch_runner.run_converter", fake_converter)
+    monkeypatch.setattr("aic_collector.automation.batch_runner.record_upload_and_verify", fake_upload)
+
+    claim = ClaimedConfig(
+        task_type="sfp",
+        sample_index=1,
+        running_path=tmp_path / "queue/sfp/running/config_sfp_0001.yaml",
+    )
+    cfg = consumer_cli.LerobotUploadConfig(
+        hf_repo_id="org/repo",
+        manifest_path=manifest,
+        staging_root=tmp_path / "stage",
+        lerobot_root=tmp_path / "lerobot",
+        converter_path=converter_path,
+        path_prefix="worker",
+        batch_id="batch-1",
+    )
+
+    consumer_cli.record_worker_manifest_start(cfg, claim)
+    result = consumer_cli.run_lerobot_upload_automation(
+        config=cfg,
+        claim=claim,
+        done_path=tmp_path / "queue/sfp/done/config_sfp_0001.yaml",
+        output_root=str(tmp_path / "out"),
+        run_tag=run_tag,
+        collect_episode=True,
+    )
+
+    assert result["ok"] is True
+    events = read_events(manifest)
+    item_states = [event["state"] for event in events if event["item_id"] == "config_sfp_0001"]
+    assert item_states[:9] == [
+        "planned",
+        "worker_started",
+        "worker_finished",
+        "reconciled",
+        "collected_validated",
+        "staged",
+        "converted",
+        "uploaded",
+        "remote_verified",
+    ]
+    assert materialize(manifest)["config_sfp_0001"]["state"] == "cleanup_done"
+    assert not run_dir.exists()
+
+
+def test_lerobot_upload_conversion_error_is_item_failure_not_worker_crash(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.jsonl"
+    run_tag = "20260505_120000_sfp_0002"
+    run_dir = tmp_path / "out" / f"run_{run_tag}"
+    (run_dir / "bag").mkdir(parents=True)
+    (run_dir / "bag/data.mcap").write_bytes(b"mcap")
+    (run_dir / "tags.json").write_text("{}")
+    (run_dir / "episode").mkdir()
+    (run_dir / "validation.json").write_text('{"success": true}')
+
+    claim = ClaimedConfig(
+        task_type="sfp",
+        sample_index=2,
+        running_path=tmp_path / "queue/sfp/running/config_sfp_0002.yaml",
+    )
+    cfg = consumer_cli.LerobotUploadConfig(
+        hf_repo_id="org/repo",
+        manifest_path=manifest,
+        staging_root=tmp_path / "stage",
+        lerobot_root=tmp_path / "lerobot",
+        converter_path=tmp_path / "missing-converter",
+        path_prefix="worker",
+        batch_id="batch-1",
+    )
+
+    consumer_cli.record_worker_manifest_start(cfg, claim)
+    result = consumer_cli.run_lerobot_upload_automation(
+        config=cfg,
+        claim=claim,
+        done_path=tmp_path / "queue/sfp/done/config_sfp_0002.yaml",
+        output_root=str(tmp_path / "out"),
+        run_tag=run_tag,
+        collect_episode=True,
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "convert"
+    assert "rosbag-to-lerobot converter entry point not found" in result["error"]
+    events = read_events(manifest)
+    convert_failed = [event for event in events if event["state"] == "convert_failed"]
+    assert len(convert_failed) == 1
+    assert convert_failed[0]["converter_path"].endswith("missing-converter")
+    assert materialize(manifest)["config_sfp_0002"]["state"] == "convert_failed"
+
+
+def test_recover_converted_upload_items_restores_pending_batch_after_restart(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.jsonl"
+    run_dir = tmp_path / "out/run_20260505_120000_sfp_0003"
+    staged_path = tmp_path / "stage/config_sfp_0003"
+    lerobot_path = tmp_path / "lerobot/items/config_sfp_0003"
+    for path in (run_dir, staged_path, lerobot_path):
+        path.mkdir(parents=True)
+    append_event(
+        manifest,
+        item_id="config_sfp_0003",
+        state="planned",
+        batch_id="old-batch",
+    )
+    append_event(
+        manifest,
+        item_id="config_sfp_0003",
+        state="worker_started",
+        batch_id="old-batch",
+    )
+    append_event(
+        manifest,
+        item_id="config_sfp_0003",
+        state="worker_finished",
+        batch_id="old-batch",
+        run_dir=str(run_dir),
+    )
+    append_event(
+        manifest,
+        item_id="config_sfp_0003",
+        state="reconciled",
+        batch_id="old-batch",
+        run_dir=str(run_dir),
+    )
+    append_event(
+        manifest,
+        item_id="config_sfp_0003",
+        state="collected_validated",
+        batch_id="old-batch",
+        run_dir=str(run_dir),
+    )
+    append_event(
+        manifest,
+        item_id="config_sfp_0003",
+        state="staged",
+        batch_id="old-batch",
+        staged_path=str(staged_path),
+    )
+    append_event(
+        manifest,
+        item_id="config_sfp_0003",
+        state="converted",
+        batch_id="old-batch",
+        staged_path=str(staged_path),
+        lerobot_path=str(lerobot_path),
+    )
+    cfg = consumer_cli.LerobotUploadConfig(
+        hf_repo_id="org/repo",
+        manifest_path=manifest,
+        staging_root=tmp_path / "stage",
+        lerobot_root=tmp_path / "lerobot",
+        converter_path=tmp_path / "converter",
+        path_prefix="worker",
+        batch_id="new-batch",
+    )
+
+    recovered, failures = consumer_cli.recover_converted_upload_items(cfg)
+
+    assert failures == 0
+    assert len(recovered) == 1
+    assert recovered[0].item_id == "config_sfp_0003"
+    assert recovered[0].run_dir == run_dir
+    assert recovered[0].staged_path == staged_path
+    assert recovered[0].lerobot_path == lerobot_path
+    assert materialize(manifest)["config_sfp_0003"]["state"] == "converted"
+
+
+def test_prepare_lerobot_upload_item_recreates_missing_manifest_start(monkeypatch, tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.jsonl"
+    run_tag = "20260505_120000_sfp_0004"
+    run_dir = tmp_path / "out" / f"run_{run_tag}"
+    (run_dir / "bag").mkdir(parents=True)
+    (run_dir / "bag/data.mcap").write_bytes(b"mcap")
+    (run_dir / "tags.json").write_text("{}")
+    (run_dir / "episode").mkdir()
+    (run_dir / "validation.json").write_text('{"success": true}')
+    converter_path = tmp_path / "converter"
+    (converter_path / "src").mkdir(parents=True)
+    (converter_path / "src/main.py").write_text("# fake")
+
+    def fake_converter(*, converter_path, input_path, output_path, config_path=None):
+        output_path.mkdir(parents=True)
+        (output_path / "meta.json").write_text("{}")
+        return 0
+
+    monkeypatch.setattr("aic_collector.automation.batch_runner.run_converter", fake_converter)
+
+    claim = ClaimedConfig(
+        task_type="sfp",
+        sample_index=4,
+        running_path=tmp_path / "queue/sfp/running/config_sfp_0004.yaml",
+    )
+    cfg = consumer_cli.LerobotUploadConfig(
+        hf_repo_id="org/repo",
+        manifest_path=manifest,
+        staging_root=tmp_path / "stage",
+        lerobot_root=tmp_path / "lerobot",
+        converter_path=converter_path,
+        path_prefix="worker",
+        batch_id="batch-1",
+    )
+
+    consumer_cli.record_worker_manifest_start(cfg, claim)
+    manifest.unlink()
+
+    item, result = consumer_cli.prepare_lerobot_upload_item(
+        config=cfg,
+        claim=claim,
+        done_path=tmp_path / "queue/sfp/done/config_sfp_0004.yaml",
+        output_root=str(tmp_path / "out"),
+        run_tag=run_tag,
+        collect_episode=True,
+    )
+
+    assert item is not None
+    assert result == {"ok": True, "stage": "converted"}
+    states = [event["state"] for event in read_events(manifest)]
+    assert states[:7] == [
+        "planned",
+        "worker_started",
+        "worker_finished",
+        "reconciled",
+        "collected_validated",
+        "staged",
+        "converted",
+    ]
+
+
+def test_main_upload_mode_fails_before_claim_when_converter_missing(monkeypatch, tmp_path: Path, capsys) -> None:
+    queue_root = tmp_path / "queue"
+    queue_root.mkdir()
+    log_path = tmp_path / "worker.log"
+    monkeypatch.setattr(
+        consumer_cli.sys,
+        "argv",
+        [
+            "aic-collector-worker",
+            "--root", str(queue_root),
+            "--limit", "1",
+            "--log", str(log_path),
+            "--hf-repo-id", "org/repo",
+            "--converter-path", str(tmp_path / "missing-converter"),
+        ],
+    )
+    monkeypatch.setattr(
+        consumer_cli,
+        "claim_one",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("claim_one should not run")),
+    )
+
+    rc = consumer_cli.main()
+
+    assert rc == 2
+    assert "converter entry point not found" in capsys.readouterr().err

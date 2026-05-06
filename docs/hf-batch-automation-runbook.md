@@ -1,11 +1,13 @@
 # Hugging Face batch automation runbook
 
-This runbook covers the approved UI batch automation path that stages collected ROS2 data, converts it with `third_party/rosbag-to-lerobot`, uploads a finalized LeRobot dataset to Hugging Face, verifies the remote result, and only then cleans up local data.
+This runbook covers the approved worker-integrated automation path that stages collected ROS2 data, converts it with `third_party/rosbag-to-lerobot`, uploads a finalized LeRobot dataset to Hugging Face, verifies the remote result, and only then cleans up local data.
 
 ## Package entry points
 
-- Install the project normally so the `aic-automation-batch` console script is available.
-- The script resolves to `aic_collector.automation.batch_runner:main` and is intended to own batch membership, conversion, Hugging Face upload, remote verification, and cleanup gates.
+- Install the project normally so `aic-collector-worker` is available.
+- `aic-collector-worker --hf-repo-id ...` owns collection, conversion, Hugging Face upload, remote verification, and cleanup gates in one worker execution path.
+- `aic-automation-batch` remains a thin wrapper that delegates to the worker with upload flags; it must not implement a competing separate upload path.
+- The Streamlit UI should expose this through the normal worker controls. The worker `limit` is the total requested episode count, and `upload_batch_size` is the collection/conversion/upload/cleanup group size. Do not add a separate "Batch → LeRobot → Hugging Face" panel.
 - The runtime dependency for Hugging Face publishing is `huggingface_hub`.
 
 ## Hugging Face authentication
@@ -48,7 +50,7 @@ Recovery rules:
 
 ## Cleanup safety
 
-Cleanup only after `remote_verified` evidence exists for the exact batch and uploaded revision. Never delete collected data before remote_verified. After verification, append `cleanup_eligible`, delete only paths explicitly listed in the manifest for that verified batch, then append `cleanup_done` with tombstones for the deleted paths and timestamp.
+Cleanup only after `remote_verified` evidence exists for the exact batch and uploaded revision. Never delete collected data before remote_verified. The worker may delete raw run directories, staging folders, and temporary LeRobot folders after each verified upload batch, but only for paths explicitly listed in the manifest for that verified batch; then append `cleanup_done` with tombstones for the deleted paths and timestamp.
 
 Never delete manifests, logs, or unrelated queue roots. There is no unchecked destructive cleanup mode in the approved MVP.
 

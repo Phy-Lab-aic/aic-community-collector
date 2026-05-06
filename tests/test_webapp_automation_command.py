@@ -26,6 +26,9 @@ def test_build_automation_runner_command_uses_isolated_tmp_paths(tmp_path: Path)
     assert cmd[cmd.index("--hf-repo-id") + 1] == "org/dataset"
     assert cmd[cmd.index("--queue-root") + 1] == str(queue_root)
     assert cmd[cmd.index("--output-root") + 1] == str(output_root)
+    assert cmd[cmd.index("--staging-root") + 1] == "/tmp/aic_automation_stage"
+    assert cmd[cmd.index("--manifest") + 1].endswith("configs/automation_batches/manifest.jsonl")
+    assert cmd[cmd.index("--converter-path") + 1].endswith("third_party/rosbag-to-lerobot")
     assert cmd[cmd.index("--pid-file") + 1] == "/tmp/aic_automation_pid.txt"
     assert cmd[cmd.index("--status-file") + 1] == "/tmp/aic_automation_status.json"
     assert cmd[cmd.index("--log-file") + 1] == "/tmp/aic_automation_run.log"

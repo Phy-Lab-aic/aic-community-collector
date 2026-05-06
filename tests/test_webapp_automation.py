@@ -38,3 +38,13 @@ def test_automation_env_does_not_persist_hf_token(monkeypatch) -> None:
     assert env["AIC_WORKER_STATE_FILE"] == str(AUTOMATION_STATE_FILE)
     assert env["HF_TOKEN"] == "secret"
     assert "AIC_HF_TOKEN" not in env
+
+
+def test_webapp_no_longer_renders_separate_batch_automation_panel() -> None:
+    source = (Path(__file__).resolve().parents[1] / "src/aic_collector/webapp.py").read_text(encoding="utf-8")
+
+    assert "### 🤗 Batch → LeRobot → Hugging Face 자동화" not in source
+    assert "automation_batch_size" not in source
+    assert "automation_start" not in source
+    assert "총 처리 수 / limit (episodes, 0=무제한)" in source
+    assert "Upload batch size (episodes)" in source

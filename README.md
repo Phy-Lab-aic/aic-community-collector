@@ -304,7 +304,18 @@ uv run aic-collector-worker --root configs/train --recover
 # SFP는 내 policy, SC는 cheatcode로 분리 실행
 uv run aic-collector-worker --root configs/train \
     --policy-sfp MyVisionPolicy --policy-sc cheatcode
+
+# 수집 성공 직후 같은 워커가 LeRobot 변환 → Hugging Face 업로드 → remote verify까지 수행
+uv run aic-collector-worker --root configs/train --task all \
+    --limit 800 --upload-batch-size 20 \
+    --policy cheatcode --collect-episode true \
+    --hf-repo-id org_or_user/dataset \
+    --converter-path third_party/rosbag-to-lerobot
 ```
+
+`--limit`은 총 처리 수이고 `--upload-batch-size`는 HF 업로드/정리 묶음 크기입니다.
+예를 들어 `--limit 800 --upload-batch-size 20`은 20개씩 수집→변환→업로드→remote verify→raw/staging 삭제를 40회 반복합니다.
+LeRobot/HF 업로드를 켜도 별도 자동화 워커를 실행하지 않습니다.
 
 ### 단일 config 실행
 

@@ -13,6 +13,17 @@ dependencies = [
     "prefect>=3.0",
     "fakeredis<2.27",
     "huggingface-hub>=1.13.0",
+    "opencv-python-headless>=4.9.0,<4.13.0",
+    "av>=15.0.0,<16.0.0",
+    "imageio>=2.34.0,<3.0.0",
+    "pandas>=2.0.0",
+    "mcap>=0.0.10",
+    "mcap-ros2-support>=0.5.0",
+    "datasets>=4.8.5",
+    "requests>=2.33.1",
+    "tqdm>=4.67.3",
+    "packaging>=25.0",
+    "fsspec>=2026.2.0",
 ]
 
 [project.scripts]
@@ -25,6 +36,7 @@ aic-automation-batch = "aic_collector.automation.batch_runner:main"
 packages = ["src/aic_collector"]
 
 [tool.pytest.ini_options]
+norecursedirs = ["third_party"]
 addopts = [
     "-p", "no:launch_ros",
     "-p", "no:launch_testing",

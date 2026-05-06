@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from aic_collector.automation import batch_runner
 from aic_collector.automation.batch_runner import (
     build_worker_command,
@@ -46,6 +48,9 @@ def test_stage_run_artifacts_is_non_destructive(tmp_path: Path) -> None:
     bag_dir.mkdir(parents=True)
     source_mcap = bag_dir / "data.mcap"
     source_mcap.write_bytes(b"mcap")
+    (run_dir / "validation.json").write_text('{"success": true}')
+    (run_dir / "episode").mkdir()
+    (run_dir / "episode" / "metadata.json").write_text("{}")
 
     staged = stage_run_artifacts(
         run_dir=run_dir,
@@ -53,8 +58,11 @@ def test_stage_run_artifacts_is_non_destructive(tmp_path: Path) -> None:
         item_id="sfp-0",
     )
 
+    converter_run = staged / "sfp-0"
     assert source_mcap.exists()
-    assert (staged / "bag" / "data.mcap").read_bytes() == b"mcap"
+    assert (converter_run / "data.mcap").read_bytes() == b"mcap"
+    assert (converter_run / "validation.json").exists()
+    assert (converter_run / "episode" / "metadata.json").exists()
 
 
 def test_upload_event_is_recorded_before_remote_verification(tmp_path: Path, monkeypatch) -> None:
@@ -157,6 +165,32 @@ def test_cleanup_deletes_only_remote_verified_manifest_paths(tmp_path: Path) -> 
     assert materialize(manifest)["safe"]["state"] == "cleanup_done"
 
 
+def test_cleanup_never_deletes_manifest_or_containing_directory(tmp_path: Path) -> None:
+    ledger_root = tmp_path / "ledger"
+    manifest = ledger_root / "worker_lerobot_upload_manifest.jsonl"
+    safe = tmp_path / "safe"
+    safe.mkdir()
+    (safe / "data.txt").write_text("delete")
+
+    append_event(
+        manifest,
+        item_id="batch",
+        state="remote_verified",
+        cleanup_paths=[str(safe), str(manifest), str(ledger_root)],
+    )
+
+    deleted = cleanup_verified_paths(manifest)
+
+    latest = materialize(manifest)["batch"]
+    assert deleted == [str(safe)]
+    assert not safe.exists()
+    assert manifest.exists()
+    assert ledger_root.exists()
+    assert latest["state"] == "cleanup_done"
+    assert latest["deleted_paths"] == [str(safe)]
+    assert latest["skipped_paths"] == [str(manifest), str(ledger_root)]
+
+
 def test_reconcile_queue_results_records_done_and_failed(tmp_path: Path) -> None:
     from aic_collector.automation.batch_runner import reconcile_queue_results
     from aic_collector.job_queue import QueueState, queue_dir
@@ -201,3 +235,82 @@ def test_validate_run_artifacts_requires_mcap_tags_and_episode(tmp_path: Path) -
     assert validate_run_artifacts(run_dir)["ok"] is True
     (run_dir / "bag/data.mcap").unlink()
     assert validate_run_artifacts(run_dir)["ok"] is False
+
+
+def test_validate_run_artifacts_accepts_prefect_validation_summary(tmp_path: Path) -> None:
+    from aic_collector.automation.batch_runner import validate_run_artifacts
+
+    run_dir = tmp_path / "run_1"
+    (run_dir / "bag").mkdir(parents=True)
+    (run_dir / "bag/data.mcap").write_bytes(b"mcap")
+    (run_dir / "tags.json").write_text("{}")
+    (run_dir / "episode").mkdir()
+    (run_dir / "validation.json").write_text(
+        '{"checks": [{"name": "a", "passed": true}], "passed_count": 17, "total_count": 17}'
+    )
+
+    assert validate_run_artifacts(run_dir)["ok"] is True
+
+
+def test_run_converter_missing_entrypoint_has_actionable_message(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="git submodule update"):
+        batch_runner.run_converter(
+            converter_path=tmp_path / "missing-converter",
+            input_path=tmp_path / "stage",
+            output_path=tmp_path / "lerobot",
+        )
+
+
+def test_run_converter_sets_converter_pythonpath(monkeypatch, tmp_path: Path) -> None:
+    converter = tmp_path / "converter"
+    (converter / "src").mkdir(parents=True)
+    (converter / "src/main.py").write_text("# fake")
+    (converter / "src/config.json").write_text('{"task": "aic_task", "repo_id": "org/repo"}')
+    captured = {}
+
+    def fake_run(cmd, *, env, check):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(batch_runner.subprocess, "run", fake_run)
+
+    rc = batch_runner.run_converter(
+        converter_path=converter,
+        input_path=tmp_path / "stage",
+        output_path=tmp_path / "out",
+    )
+
+    assert rc == 0
+    assert captured["cmd"][3].endswith("main.py")
+    generated_config = Path(captured["cmd"][4])
+    assert generated_config.name == "_local_converter_config.json"
+    assert not generated_config.exists()
+    pythonpath = captured["env"]["PYTHONPATH"].split(batch_runner.os.pathsep)
+    assert str(converter / "src") in pythonpath
+    assert str(converter / "lerobot" / "src") in pythonpath
+    assert str(converter / "docker" / "torch-stub") in pythonpath
+
+
+def test_run_converter_passes_explicit_config_as_positional_arg(monkeypatch, tmp_path: Path) -> None:
+    converter = tmp_path / "converter"
+    (converter / "src").mkdir(parents=True)
+    (converter / "src/main.py").write_text("# fake")
+    explicit_config = tmp_path / "config.json"
+    explicit_config.write_text('{"task": "x"}')
+    captured = {}
+
+    def fake_run(cmd, *, env, check):
+        captured["cmd"] = cmd
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(batch_runner.subprocess, "run", fake_run)
+
+    assert batch_runner.run_converter(
+        converter_path=converter,
+        input_path=tmp_path / "stage",
+        output_path=tmp_path / "out",
+        config_path=explicit_config,
+    ) == 0
+    assert captured["cmd"][-1] == str(explicit_config)
+    assert "--config" not in captured["cmd"]
