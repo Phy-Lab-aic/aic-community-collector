@@ -102,6 +102,72 @@ def test_verify_repo_against_ledger_flags_missing_and_extra(tmp_path: Path) -> N
     assert report["tasks"]["sc"]["extra"] == []
 
 
+def test_verify_repo_fails_closed_when_ledger_missing(tmp_path: Path) -> None:
+    """An empty repo must NOT be reported ok if we never read the ledger.
+
+    Pre-fix this returned ok=True with expected=0 — a silent false-green.
+    """
+    api = MagicMock()
+    api.list_repo_files.return_value = []  # empty repo
+    report = verify_repo_against_ledger(
+        api=api, repo_id="r", ledger_path=tmp_path / "does-not-exist.yaml",
+    )
+    assert report["ok"] is False
+    assert any("missing" in err.lower() for err in report["ledger_errors"])
+
+
+def test_verify_repo_fails_closed_when_ledger_has_no_entries(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.yaml"
+    _seed_ledger(ledger, [])  # explicit empty
+    api = MagicMock()
+    api.list_repo_files.return_value = []
+    report = verify_repo_against_ledger(api=api, repo_id="r", ledger_path=ledger)
+    assert report["ok"] is False
+    assert any("empty" in err.lower() or "no valid entries" in err.lower()
+               for err in report["ledger_errors"])
+
+
+def test_verify_repo_reports_malformed_ledger_entries(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.yaml"
+    _seed_ledger(ledger, [
+        {"member_id": "M0", "task_type": "sfp", "start_index": 0, "count": 2},
+        # malformed: count is a string
+        {"member_id": "M1", "task_type": "sfp", "start_index": 100, "count": "oops"},
+        # malformed: unknown task_type
+        {"member_id": "M2", "task_type": "lc",  "start_index": 200, "count": 1},
+    ])
+    api = MagicMock()
+    api.list_repo_files.return_value = [
+        "x/config_sfp_000000/a", "x/config_sfp_000001/b",
+    ]
+    report = verify_repo_against_ledger(api=api, repo_id="r", ledger_path=ledger)
+    assert report["ok"] is False
+    # Two malformed entries should be surfaced verbatim.
+    assert len(report["ledger_errors"]) >= 2
+
+
+def test_verify_repo_strict_mode_rejects_single_file_per_index(tmp_path: Path) -> None:
+    """With min_files_per_item=2, a config_sfp_000000/ with only one stray file
+    must not be accepted as 'present'. Pre-fix it was."""
+    ledger = tmp_path / "ledger.yaml"
+    _seed_ledger(ledger, [
+        {"member_id": "M0", "task_type": "sfp", "start_index": 0, "count": 2},
+    ])
+    api = MagicMock()
+    api.list_repo_files.return_value = [
+        "x/config_sfp_000000/episode/data.parquet",      # only 1 file for idx 0
+        "x/config_sfp_000001/episode/data.parquet",
+        "x/config_sfp_000001/meta/info.json",             # 2 files for idx 1
+    ]
+    report = verify_repo_against_ledger(
+        api=api, repo_id="r", ledger_path=ledger, min_files_per_item=2,
+    )
+    assert report["ok"] is False
+    assert report["tasks"]["sfp"]["below_min_indices"] == [0]
+    assert report["tasks"]["sfp"]["file_counts"][0] == 1
+    assert report["tasks"]["sfp"]["file_counts"][1] == 2
+
+
 def test_verify_repo_passes_when_inventory_matches(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.yaml"
     _seed_ledger(ledger, [
@@ -114,6 +180,7 @@ def test_verify_repo_passes_when_inventory_matches(tmp_path: Path) -> None:
     report = verify_repo_against_ledger(api=api, repo_id="org/aic", ledger_path=ledger)
     assert report["ok"] is True
     assert report["tasks"]["sfp"]["present"] == 2
+    assert report["ledger_errors"] == []
 
 
 def test_retry_failed_uploads_skips_when_folder_missing(tmp_path: Path) -> None:

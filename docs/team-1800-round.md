@@ -206,9 +206,28 @@ python -m aic_collector.team_preset verify-repo \
     --repo-id <org>/<dataset>
 ```
 
-Reports per-task `expected / present / missing / extra`. Missing indices are
-the ones to retry; non-zero `extra` would indicate uploads outside the
-ledger (probably leftovers from a previous round).
+Reports per-task `expected / present / missing / extra / below_min`. Missing
+indices are the ones to retry; non-zero `extra` would indicate uploads
+outside the ledger (probably leftovers from a previous round).
+
+The verifier is **fail-closed**: a missing ledger, malformed entries, or an
+empty `entries:` list always produces `ok: false` with a `ledger errors:`
+block. An empty repo paired with a missing ledger will not silently pass.
+
+`--min-files-per-item N` (default 1) raises the per-index threshold for
+"present". With the default, `ok` only guarantees at-least-one-file per
+expected index — **not** artifact completeness. To gate on completeness,
+set N to your expected per-item artifact count:
+
+```bash
+python -m aic_collector.team_preset verify-repo \
+    --ledger configs/team/seed_ledger.yaml \
+    --repo-id <org>/<dataset> \
+    --min-files-per-item 4    # e.g. parquet + meta + episode + tags
+```
+
+Indices with fewer files than the threshold are listed under
+`below-min indices` in the output.
 
 Requires `huggingface_hub` installed and an authenticated token
 (`HF_TOKEN` or `huggingface-cli login`).

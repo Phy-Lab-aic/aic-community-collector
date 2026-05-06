@@ -1211,17 +1211,31 @@ def _cli_verify_repo(args: argparse.Namespace) -> int:
         repo_id=args.repo_id,
         ledger_path=Path(args.ledger),
         repo_type=args.repo_type,
+        min_files_per_item=args.min_files_per_item,
     )
-    print(f"repo={report['repo_id']} ok={report['ok']}")
+    print(
+        f"repo={report['repo_id']} ok={report['ok']} "
+        f"min_files_per_item={report['min_files_per_item']}"
+    )
+    if report["ledger_errors"]:
+        print("ledger errors:")
+        for err in report["ledger_errors"]:
+            print(f"  - {err}")
     for task, stats in report["tasks"].items():
         print(
             f"  {task}: expected={stats['expected']} present={stats['present']} "
-            f"missing={len(stats['missing'])} extra={len(stats['extra'])}"
+            f"missing={len(stats['missing'])} extra={len(stats['extra'])} "
+            f"below_min={len(stats['below_min_indices'])}"
         )
         if stats["missing"]:
             preview = stats["missing"][:10]
             tail = "" if len(stats["missing"]) <= 10 else f" ... (+{len(stats['missing']) - 10} more)"
             print(f"    missing indices: {preview}{tail}")
+        if stats["below_min_indices"]:
+            preview = stats["below_min_indices"][:10]
+            tail = ("" if len(stats["below_min_indices"]) <= 10
+                    else f" ... (+{len(stats['below_min_indices']) - 10} more)")
+            print(f"    below-min indices: {preview}{tail}")
     return 0 if report["ok"] else 1
 
 
@@ -1380,6 +1394,12 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--ledger", required=True)
     verify.add_argument("--repo-id", required=True)
     verify.add_argument("--repo-type", default="dataset")
+    verify.add_argument(
+        "--min-files-per-item", type=int, default=1,
+        help="Minimum file count per sample_index for it to count as present. "
+             "Raise to your expected per-item artifact count to gate on "
+             "artifact completeness (default 1: any-file-present)",
+    )
     verify.set_defaults(func=_cli_verify_repo)
 
     retry = sub.add_parser(
