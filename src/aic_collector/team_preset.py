@@ -1178,6 +1178,87 @@ def _cli_requeue_low_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cli_aggregate_manifests(args: argparse.Namespace) -> int:
+    from aic_collector.automation.round_helpers import aggregate_manifests
+
+    paths = [Path(p) for p in args.manifest]
+    rollup = aggregate_manifests(paths)
+    print(f"manifests scanned: {len(paths)}")
+    print(f"unique items:      {len(rollup['items'])}")
+    print("state counts:")
+    for state, count in sorted(rollup["state_counts"].items(), key=lambda kv: -kv[1]):
+        print(f"  {state:>22}: {count}")
+    if rollup["failures"]:
+        print(f"failures ({len(rollup['failures'])}):")
+        for event in rollup["failures"][:20]:
+            print(f"  {event.get('item_id')} -> {event.get('state')}")
+        if len(rollup["failures"]) > 20:
+            print(f"  ... and {len(rollup['failures']) - 20} more")
+    return 0
+
+
+def _cli_verify_repo(args: argparse.Namespace) -> int:
+    try:
+        from huggingface_hub import HfApi  # type: ignore
+    except ImportError:
+        print("[error] huggingface_hub not installed", file=sys.stderr)
+        return 2
+    from aic_collector.automation.round_helpers import verify_repo_against_ledger
+
+    api = HfApi()
+    report = verify_repo_against_ledger(
+        api=api,
+        repo_id=args.repo_id,
+        ledger_path=Path(args.ledger),
+        repo_type=args.repo_type,
+    )
+    print(f"repo={report['repo_id']} ok={report['ok']}")
+    for task, stats in report["tasks"].items():
+        print(
+            f"  {task}: expected={stats['expected']} present={stats['present']} "
+            f"missing={len(stats['missing'])} extra={len(stats['extra'])}"
+        )
+        if stats["missing"]:
+            preview = stats["missing"][:10]
+            tail = "" if len(stats["missing"]) <= 10 else f" ... (+{len(stats['missing']) - 10} more)"
+            print(f"    missing indices: {preview}{tail}")
+    return 0 if report["ok"] else 1
+
+
+def _cli_retry_uploads(args: argparse.Namespace) -> int:
+    try:
+        from huggingface_hub import HfApi  # type: ignore
+    except ImportError:
+        print("[error] huggingface_hub not installed", file=sys.stderr)
+        return 2
+    from aic_collector.automation.round_helpers import retry_failed_uploads
+
+    api = HfApi()
+    report = retry_failed_uploads(
+        manifest_path=Path(args.manifest),
+        repo_id=args.repo_id,
+        api=api,
+        path_prefix=args.path_prefix,
+        max_attempts=args.max_attempts,
+        backoff_seconds=args.backoff_seconds,
+    )
+    if not report:
+        print("nothing to retry")
+        return 0
+    succeeded = sum(1 for r in report if r["ok"])
+    failed = len(report) - succeeded
+    print(f"retried: {len(report)}  succeeded: {succeeded}  still-failed: {failed}")
+    for r in report:
+        flag = "OK" if r["ok"] else ("MISS" if r["missing_folder"] else "FAIL")
+        line = (
+            f"  [{flag}] {r['item_id']} prev={r['previous_state']} attempts={r['attempts']}"
+        )
+        if r["error"]:
+            line += f" err={r['error']}"
+        print(line)
+    return 0 if failed == 0 else 1
+
+
 def _cli_submit_member(args: argparse.Namespace) -> int:
     preset = load_preset(Path(args.preset))
     if preset is None:
@@ -1283,6 +1364,34 @@ def _build_parser() -> argparse.ArgumentParser:
     sub_member.add_argument("--template", required=True)
     sub_member.add_argument("--member", required=True)
     sub_member.set_defaults(func=_cli_submit_member)
+
+    agg = sub.add_parser(
+        "aggregate-manifests",
+        help="Roll up several PCs' manifest.jsonl files into one summary",
+    )
+    agg.add_argument("--manifest", action="append", required=True,
+                     help="Path to a manifest.jsonl. Pass --manifest multiple times.")
+    agg.set_defaults(func=_cli_aggregate_manifests)
+
+    verify = sub.add_parser(
+        "verify-repo",
+        help="Cross-check the HF dataset repo's file inventory against the ledger",
+    )
+    verify.add_argument("--ledger", required=True)
+    verify.add_argument("--repo-id", required=True)
+    verify.add_argument("--repo-type", default="dataset")
+    verify.set_defaults(func=_cli_verify_repo)
+
+    retry = sub.add_parser(
+        "retry-uploads",
+        help="Re-issue uploads for manifest items in a retryable failure state",
+    )
+    retry.add_argument("--manifest", required=True)
+    retry.add_argument("--repo-id", required=True)
+    retry.add_argument("--path-prefix", default="")
+    retry.add_argument("--max-attempts", type=int, default=3)
+    retry.add_argument("--backoff-seconds", type=float, default=2.0)
+    retry.set_defaults(func=_cli_retry_uploads)
 
     return parser
 

@@ -175,6 +175,63 @@ PY
 
 Goal: `{"validated": 1800, ...}` with `low == 0` and `missing == 0`.
 
+## Multi-PC HF upload coordination
+
+When members upload from different PCs to the same HF dataset repo, three
+helpers (under `python -m aic_collector.team_preset`) keep the round honest:
+
+### `aggregate-manifests` — round-wide progress
+
+Each PC has its own `manifest.jsonl`. Pull them all to one host (rsync) and
+get a state rollup:
+
+```bash
+python -m aic_collector.team_preset aggregate-manifests \
+    --manifest /path/to/pc1/manifest.jsonl \
+    --manifest /path/to/pc2/manifest.jsonl \
+    ...
+```
+
+Output lists state counts (uploaded / remote_verified / upload_failed / ...)
+plus the offending item_ids for any in a failure state.
+
+### `verify-repo` — what's actually on HF Hub
+
+After uploads finish, list the repo's real file inventory and cross-check
+the ledger's expected sample_index window:
+
+```bash
+python -m aic_collector.team_preset verify-repo \
+    --ledger configs/team/seed_ledger.yaml \
+    --repo-id <org>/<dataset>
+```
+
+Reports per-task `expected / present / missing / extra`. Missing indices are
+the ones to retry; non-zero `extra` would indicate uploads outside the
+ledger (probably leftovers from a previous round).
+
+Requires `huggingface_hub` installed and an authenticated token
+(`HF_TOKEN` or `huggingface-cli login`).
+
+### `retry-uploads` — re-issue failed pushes
+
+Run on each PC where a manifest contains `upload_failed` /
+`remote_verify_failed` / `stage_failed` events. Looks at every such item's
+last event for a still-on-disk staged folder and re-invokes
+`record_upload_and_verify` with bounded retries:
+
+```bash
+python -m aic_collector.team_preset retry-uploads \
+    --manifest ~/aic_round_manifest.jsonl \
+    --repo-id <org>/<dataset> \
+    --max-attempts 3 \
+    --backoff-seconds 2
+```
+
+If the staged folder was already cleaned up after a successful upload, the
+helper reports `MISS` and skips that item — those need full re-collection
+through the worker, not just an upload retry.
+
 ## Common pitfalls
 
 - **Don't run more than one worker on the same `--root` simultaneously per
