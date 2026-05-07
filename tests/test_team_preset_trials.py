@@ -179,7 +179,7 @@ def test_submit_member_claim_dispatches_trial3_to_sc(
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         task = cfg["trials"]["trial_1"]["tasks"]["task_1"]
         assert task["target_module_name"] == "sc_port_1"
-        assert task["port_name"] == "sc_port_1"
+        assert task["port_name"] == "sc_port_base"
         assert task["plug_type"] == "sc"
 
 
