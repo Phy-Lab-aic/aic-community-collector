@@ -11,7 +11,7 @@
 #   - M1..M5:   trial_1 x 120 + trial_2 x 120 = 240 each (5 members x 240 = 1200)
 #   Total: 600 (trial_1) + 600 (trial_2) + 600 (trial_3) = 1800.
 #
-# Score gate: trial total < 95 -> requeued via `aic-collector` reconcile-score
+# Score gate: trial total < 94 -> requeued via `aic-collector` reconcile-score
 # + requeue-low-score (see docs/team-1800-round.md).
 
 version: 3
