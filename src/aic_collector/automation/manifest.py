@@ -40,6 +40,15 @@ FAILURE_STATES: frozenset[str] = frozenset(
     }
 )
 _INITIAL_STATES: frozenset[str] = frozenset({"planned", "uploaded", "remote_verified"})
+_RECOVERY_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("stage_failed", "staged"),
+        ("convert_failed", "converted"),
+        ("upload_failed", "uploaded"),
+        ("remote_verify_failed", "uploaded"),
+        ("cleanup_failed", "cleanup_done"),
+    }
+)
 
 
 class ManifestTransitionError(ValueError):
@@ -132,6 +141,8 @@ def _validate_transition(previous_state: str | None, next_state: str) -> None:
     if next_state in FAILURE_STATES:
         return
     if previous_state in FAILURE_STATES:
+        if (previous_state, next_state) in _RECOVERY_TRANSITIONS:
+            return
         raise InvalidTransition(f"Cannot transition from failure state {previous_state!r} to {next_state!r}")
     try:
         previous_index = FORWARD_STATES.index(previous_state)

@@ -47,6 +47,37 @@ def test_invalid_forward_or_backward_transition_is_rejected(tmp_path: Path) -> N
     assert len(manifest_path.read_text(encoding="utf-8").splitlines()) == 2
 
 
+def test_retryable_failure_can_recover_to_matching_forward_state(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.jsonl"
+    item_id = "config-sc-000002"
+
+    for state in (
+        "planned",
+        "worker_started",
+        "worker_finished",
+        "reconciled",
+        "collected_validated",
+        "staged",
+    ):
+        append_event(manifest_path, item_id=item_id, state=state)
+
+    append_event(manifest_path, item_id=item_id, state="convert_failed")
+    append_event(manifest_path, item_id=item_id, state="converted")
+
+    assert materialize(manifest_path)[item_id]["state"] == "converted"
+
+
+def test_failure_cannot_recover_to_unrelated_forward_state(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.jsonl"
+    item_id = "config-sc-000002"
+
+    append_event(manifest_path, item_id=item_id, state="planned")
+    append_event(manifest_path, item_id=item_id, state="worker_failed")
+
+    with pytest.raises(InvalidTransition):
+        append_event(manifest_path, item_id=item_id, state="converted")
+
+
 def test_cleanup_gate_requires_remote_verified_and_records_tombstone(tmp_path: Path) -> None:
     manifest_path = tmp_path / "manifest.jsonl"
     item_id = "batch-001"
