@@ -1,8 +1,8 @@
-# Team 1800-episode Round (Trial-sharded, 95+ Gate)
+# Team 1800-episode Round (Trial-sharded, 94+ Gate)
 
 This round collects **1800 validated episodes** (≈30h at ~1m/episode) split
 across three trial scenarios and six members. Every kept episode must score
-**≥ 95** on its trial total; anything below is automatically re-queued.
+**≥ 94** on its trial total; anything below is automatically re-queued.
 
 ## Round contract
 
@@ -118,14 +118,14 @@ to `/tmp/aic_worker_run.log`.
 uv run python -m aic_collector.team_preset reconcile-score \
     --ledger configs/team/seed_ledger.yaml \
     --output-root "$OUT_ROOT" \
-    --threshold 95
+    --threshold 94
 ```
 
 Output (one line per ledger entry):
 
 ```
-M0/sfp: 300 claimed, 287 validated (>= 95.0), 11 low-score, 2 missing
-M1/sfp: 300 claimed, 296 validated (>= 95.0), 4 low-score, 0 missing
+M0/sfp: 300 claimed, 287 validated (>= 94.0), 11 low-score, 2 missing
+M1/sfp: 300 claimed, 296 validated (>= 94.0), 4 low-score, 0 missing
 ...
 ```
 
@@ -152,7 +152,7 @@ the same trial fixed_target. Run the worker again.
 
 Repeat **steps 2 → 3 → 4** until every entry's
 `score_validated_count == count` (i.e., `low-score == 0` and `missing == 0`).
-At that point the round has 1800 episodes all ≥ 95.
+At that point the round has 1800 episodes all ≥ 94.
 
 ## 5. Final tally
 

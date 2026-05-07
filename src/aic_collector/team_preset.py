@@ -609,7 +609,7 @@ def reconcile_with_score_threshold(
     ledger_path: Path,
     output_root: Path,
     *,
-    threshold: float = 95.0,
+    threshold: float = 94.0,
 ) -> list[dict[str, Any]]:
     """Annotate every ledger entry with score-gate metadata.
 
@@ -1345,7 +1345,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     rec_score.add_argument("--ledger", required=True)
     rec_score.add_argument("--output-root", required=True)
-    rec_score.add_argument("--threshold", type=float, default=95.0)
+    rec_score.add_argument("--threshold", type=float, default=94.0)
     rec_score.set_defaults(func=_cli_reconcile_score)
 
     requeue = sub.add_parser(

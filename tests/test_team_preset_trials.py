@@ -254,23 +254,23 @@ def test_reconcile_with_score_threshold_partitions_indices(
 
     output_root = tmp_path / "out"
     output_root.mkdir()
-    # 4 indices claimed: 0,1,2,3. Score them: 100, 80, 95, no run (missing).
+    # 4 indices claimed: 0,1,2,3. Score them: 100, 80, 94, no run (missing).
     _write_run(output_root, timestamp="20260507_010000", task="sfp",
                sample_index=0, trial_num=1, tier_scores=(50, 30, 20))
     _write_run(output_root, timestamp="20260507_010001", task="sfp",
                sample_index=1, trial_num=1, tier_scores=(40, 30, 10))
     _write_run(output_root, timestamp="20260507_010002", task="sfp",
-               sample_index=2, trial_num=1, tier_scores=(50, 30, 15))
+               sample_index=2, trial_num=1, tier_scores=(50, 30, 14))
     # index 3: no run dir written
 
-    entries = reconcile_with_score_threshold(ledger, output_root, threshold=95.0)
+    entries = reconcile_with_score_threshold(ledger, output_root)
     assert len(entries) == 1
     e = entries[0]
     assert e["high_score_indices"] == [0, 2]
     assert e["low_score_indices"] == [1]
     assert e["missing_indices"] == [3]
     assert e["score_validated_count"] == 2
-    assert e["score_threshold"] == 95.0
+    assert e["score_threshold"] == 94.0
     assert "score_reconciled_at" in e
 
 
@@ -291,7 +291,7 @@ def test_reconcile_score_keeps_latest_run_per_index(tmp_path: Path, monkeypatch)
     _write_run(output_root, timestamp="20260507_020000", task="sfp",
                sample_index=0, trial_num=1, tier_scores=(50, 30, 20))
 
-    entries = reconcile_with_score_threshold(ledger, output_root, threshold=95.0)
+    entries = reconcile_with_score_threshold(ledger, output_root)
     assert entries[0]["high_score_indices"] == [0]
     assert entries[0]["low_score_indices"] == []
 
@@ -315,7 +315,7 @@ def test_reconcile_score_ignores_other_task_runs(tmp_path: Path, monkeypatch) ->
     _write_run(output_root, timestamp="20260507_010002", task="sfp",
                sample_index=2000, trial_num=1, tier_scores=(0, 0, 0))
 
-    entries = reconcile_with_score_threshold(ledger, output_root, threshold=95.0)
+    entries = reconcile_with_score_threshold(ledger, output_root)
     assert entries[0]["high_score_indices"] == [2000]
     assert entries[0]["low_score_indices"] == [2001]
 
@@ -330,23 +330,23 @@ def test_requeue_low_score_writes_new_configs(tmp_path: Path, monkeypatch) -> No
 
     output_root = tmp_path / "out"
     output_root.mkdir()
-    # 2 of 4 indices fall below 95
+    # 2 of 4 indices fall below 94
     _write_run(output_root, timestamp="20260507_010000", task="sfp",
                sample_index=0, trial_num=1, tier_scores=(50, 30, 20))  # 100
     _write_run(output_root, timestamp="20260507_010001", task="sfp",
                sample_index=1, trial_num=1, tier_scores=(30, 20, 10))  # 60
     _write_run(output_root, timestamp="20260507_010002", task="sfp",
-               sample_index=2, trial_num=1, tier_scores=(50, 30, 15))  # 95
+               sample_index=2, trial_num=1, tier_scores=(50, 30, 14))  # 94
     _write_run(output_root, timestamp="20260507_010003", task="sfp",
                sample_index=3, trial_num=1, tier_scores=(20, 10, 5))   # 35
 
-    reconcile_with_score_threshold(ledger, output_root, threshold=95.0)
+    reconcile_with_score_threshold(ledger, output_root)
     results = requeue_low_score_for_member(
         preset, member_id="M0", queue_root=queue_root,
         ledger_path=ledger, template_path=template,
     )
     assert len(results) == 1
-    assert results[0].written_count == 2  # indices 1 and 3 were below 95
+    assert results[0].written_count == 2  # indices 1 and 3 were below 94
     # Original 4 (0..3) + replacement 2 (4..5) = 6 pending configs.
     pending = sorted((queue_root / "sfp" / "pending").glob("config_sfp_*.yaml"))
     indices = sorted(int(p.stem.rsplit("_", 1)[-1]) for p in pending)
@@ -366,7 +366,7 @@ def test_requeue_low_score_returns_none_when_all_pass(tmp_path: Path, monkeypatc
         _write_run(output_root, timestamp=f"2026050{i+1}_010000", task="sfp",
                    sample_index=i, trial_num=1, tier_scores=(50, 30, 20))
 
-    reconcile_with_score_threshold(ledger, output_root, threshold=95.0)
+    reconcile_with_score_threshold(ledger, output_root)
     results = requeue_low_score_for_member(
         preset, member_id="M0", queue_root=queue_root,
         ledger_path=ledger, template_path=template,
