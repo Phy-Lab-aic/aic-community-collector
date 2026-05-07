@@ -122,6 +122,15 @@ HIDDEN_POLICIES = {
 }
 
 
+def worker_recent_icon(result: str | None) -> str:
+    """Return the status icon shown for recent worker items."""
+    if result in {"done", "uploaded"}:
+        return "✅"
+    if result == "converted":
+        return "⏳"
+    return "❌"
+
+
 # 큐 워커 상태 파일 (Phase 2b)
 WORKER_STATE_FILE = Path("/tmp/aic_worker_state.json")
 WORKER_PID_FILE = Path("/tmp/aic_worker_pid.txt")
@@ -2707,7 +2716,7 @@ if st is not None:
             if recent:
                 with st.expander(f"📋 최근 처리 {len(recent)}개", expanded=True):
                     for r in recent:
-                        icon = "✅" if r.get("result") in ("done", "uploaded") else "❌"
+                        icon = worker_recent_icon(r.get("result"))
                         upload_stage = f" · upload={r.get('upload_stage')}" if r.get("upload_stage") else ""
                         st.write(
                             f"{icon} `{r.get('name', '?')}` · "

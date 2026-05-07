@@ -8,6 +8,7 @@ from aic_collector.webapp import (
     AUTOMATION_STATE_FILE,
     build_automation_command,
     build_automation_env,
+    worker_recent_icon,
 )
 
 
@@ -38,6 +39,13 @@ def test_automation_env_does_not_persist_hf_token(monkeypatch) -> None:
     assert env["AIC_WORKER_STATE_FILE"] == str(AUTOMATION_STATE_FILE)
     assert env["HF_TOKEN"] == "secret"
     assert "AIC_HF_TOKEN" not in env
+
+
+def test_worker_recent_icon_treats_converted_as_pending_success() -> None:
+    assert worker_recent_icon("done") == "✅"
+    assert worker_recent_icon("uploaded") == "✅"
+    assert worker_recent_icon("converted") == "⏳"
+    assert worker_recent_icon("upload_failed") == "❌"
 
 
 def test_webapp_no_longer_renders_separate_batch_automation_panel() -> None:
