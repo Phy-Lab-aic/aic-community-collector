@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -11,13 +11,17 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from aic_collector.job_queue import QueueState, queue_dir  # noqa: E402
 from aic_collector.team_preset import (  # noqa: E402
+    MemberAssignment,
     PresetError,
     TeamPreset,
+    TrialSpec,
     append_claim,
     load_preset,
     submit_team_claim,
 )
 from aic_collector.webapp import (  # noqa: E402
+    build_team_assignment_preview,
+    build_team_assignment_task_counts,
     build_team_mode_state,
     build_team_preview_scene_config,
     build_validated_preset_ranges,
@@ -58,6 +62,55 @@ def _preset(
             {"id": "m1", "name": "Member 1"},
         ),
         preset_hash="sha256:test",
+    )
+
+
+def _preset_with_trial_assignments() -> TeamPreset:
+    preset = _preset(index_width=5)
+    return TeamPreset(
+        base_seed=preset.base_seed,
+        shard_stride=100,
+        index_width=preset.index_width,
+        strategy=preset.strategy,
+        ranges=preset.ranges,
+        scene=preset.scene,
+        tasks={"sfp_default_count": 0, "sc_default_count": 0},
+        members=(
+            {"id": "m0", "name": "Member 0"},
+            {"id": "m1", "name": "Member 1"},
+        ),
+        preset_hash=preset.preset_hash,
+        trials=MappingProxyType(
+            {
+                "trial_1": TrialSpec(
+                    trial_id="trial_1",
+                    task_type="sfp",
+                    rail=0,
+                    port="sfp_port_0",
+                ),
+                "trial_2": TrialSpec(
+                    trial_id="trial_2",
+                    task_type="sfp",
+                    rail=1,
+                    port="sfp_port_0",
+                ),
+                "trial_3": TrialSpec(
+                    trial_id="trial_3",
+                    task_type="sc",
+                    rail=1,
+                    port="sc_port_1",
+                ),
+            }
+        ),
+        member_assignments=MappingProxyType(
+            {
+                "m0": (MemberAssignment(trial_id="trial_3", count=6),),
+                "m1": (
+                    MemberAssignment(trial_id="trial_1", count=3),
+                    MemberAssignment(trial_id="trial_2", count=2),
+                ),
+            }
+        ),
     )
 
 
@@ -213,6 +266,54 @@ def test_build_team_submit_preset_accepts_nonzero_sc_default_count() -> None:
 
     assert submit_preset.tasks["sfp"] == 5
     assert submit_preset.tasks["sc_default_count"] == 100
+
+
+def test_build_team_assignment_task_counts_uses_member_assignments() -> None:
+    preset = _preset_with_trial_assignments()
+
+    assert build_team_assignment_task_counts(preset, "m0") == {"sfp": 0, "sc": 6}
+    assert build_team_assignment_task_counts(preset, "m1") == {"sfp": 5, "sc": 0}
+
+
+def test_build_team_assignment_preview_follows_assignment_order(tmp_path: Path) -> None:
+    preset = _preset_with_trial_assignments()
+
+    preview = build_team_assignment_preview(
+        preset,
+        queue_root=tmp_path / "queue",
+        ledger_path=tmp_path / "ledger.yaml",
+        member_id="m1",
+    )
+
+    assert preview["total_count"] == 5
+    assert preview["slot_error"] is None
+    assert [
+        (row["trial_id"], row["task_type"], row["file_range"])
+        for row in preview["rows"]
+    ] == [
+        ("trial_1", "sfp", "config_sfp_00100.yaml ~ config_sfp_00102.yaml"),
+        ("trial_2", "sfp", "config_sfp_00103.yaml ~ config_sfp_00104.yaml"),
+    ]
+
+
+def test_build_team_assignment_preview_supports_sc_only_member(tmp_path: Path) -> None:
+    preset = _preset_with_trial_assignments()
+
+    preview = build_team_assignment_preview(
+        preset,
+        queue_root=tmp_path / "queue",
+        ledger_path=tmp_path / "ledger.yaml",
+        member_id="m0",
+    )
+
+    assert preview["total_count"] == 6
+    assert preview["slot_error"] is None
+    assert [
+        (row["trial_id"], row["task_type"], row["file_range"])
+        for row in preview["rows"]
+    ] == [
+        ("trial_3", "sc", "config_sc_00000.yaml ~ config_sc_00005.yaml"),
+    ]
 
 
 def test_build_team_preview_scene_config_threads_fixed_target_into_collection() -> None:

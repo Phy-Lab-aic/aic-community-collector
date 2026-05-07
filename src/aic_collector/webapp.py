@@ -107,7 +107,7 @@ from aic_collector.team_preset import (  # noqa: E402
     load_preset,
     next_start_index_in_slot,
     slot_range,
-    submit_team_claim,
+    submit_member_claim,
 )
 
 POLICIES_DIR = PROJECT_DIR / "policies"
@@ -1293,6 +1293,86 @@ def build_team_mode_state(
     }
 
 
+def build_team_assignment_task_counts(preset: TeamPreset, member_id: str) -> dict[str, int]:
+    assignments = preset.member_assignments.get(member_id)
+    if not assignments:
+        raise PresetError(f"Member has no assignment: {member_id}")
+
+    counts = {"sfp": 0, "sc": 0}
+    for assignment in assignments:
+        trial = preset.trials.get(assignment.trial_id)
+        if trial is None:
+            raise PresetError(f"Assignment references unknown trial: {assignment.trial_id}")
+        counts[trial.task_type] += int(assignment.count)
+    return counts
+
+
+def build_team_assignment_preview(
+    preset: TeamPreset,
+    *,
+    queue_root: Path,
+    ledger_path: Path | None,
+    member_id: str,
+) -> dict[str, Any]:
+    assignments = preset.member_assignments.get(member_id)
+    if not assignments:
+        raise PresetError(f"Member has no assignment: {member_id}")
+
+    rows: list[dict[str, Any]] = []
+    next_by_task: dict[str, int] = {}
+    slot_error: str | None = None
+    total_count = 0
+
+    for assignment in assignments:
+        trial = preset.trials.get(assignment.trial_id)
+        if trial is None:
+            raise PresetError(f"Assignment references unknown trial: {assignment.trial_id}")
+
+        task_type = trial.task_type
+        count = int(assignment.count)
+        total_count += count
+
+        try:
+            start_index = next_by_task.get(task_type)
+            if start_index is None:
+                start_index = next_start_index_in_slot(
+                    preset,
+                    member_id,
+                    queue_root,
+                    task_type,
+                    ledger_path=ledger_path,
+                )
+            end_index = start_index + count - 1
+            next_by_task[task_type] = start_index + count
+            filename = f"config_{task_type}_{start_index:0{preset.index_width}d}.yaml"
+            if count == 1:
+                file_range = filename
+            else:
+                file_range = (
+                    f"{filename} ~ "
+                    f"config_{task_type}_{end_index:0{preset.index_width}d}.yaml"
+                )
+        except SlotExhausted as exc:
+            start_index = None
+            end_index = None
+            file_range = "생성 가능한 팀 슬롯 없음"
+            slot_error = str(exc)
+
+        rows.append(
+            {
+                "trial_id": assignment.trial_id,
+                "task_type": task_type,
+                "count": count,
+                "start_index": start_index,
+                "end_index": end_index,
+                "file_range": file_range,
+                "fixed_target": {"rail": trial.rail, "port": trial.port},
+            }
+        )
+
+    return {"rows": rows, "total_count": total_count, "slot_error": slot_error}
+
+
 def build_team_submit_preset(preset: TeamPreset, *, sfp_count: int) -> TeamPreset:
     _require_sfp_only_team_mode_tasks(preset)
     if sfp_count < 0:
@@ -1617,6 +1697,8 @@ if st is not None:
     
         team_mode_active = team_preset is not None and team_mode_error is None
         team_state: dict[str, Any] | None = None
+        team_assignment_counts: dict[str, int] | None = None
+        team_assignment_preview: dict[str, Any] | None = None
         team_preview_scene_cfg: dict[str, Any] | None = None
         team_member_options: list[str] = []
         team_member_lookup: dict[str, dict[str, str]] = {}
@@ -1637,6 +1719,10 @@ if st is not None:
                     st.session_state["mgr_team_member"] = team_member_options[0]
                 mgr_team_member_id = str(st.session_state["mgr_team_member"])
                 try:
+                    team_assignment_counts = build_team_assignment_task_counts(
+                        team_preset,
+                        mgr_team_member_id,
+                    )
                     mgr_team_sc_default_count = _preset_task_count(team_preset, "sc_default_count")
                     validated_preset_ranges = build_validated_preset_ranges(team_preset)
                     team_preview_scene_cfg = build_team_preview_scene_config(team_preset)
@@ -1645,7 +1731,13 @@ if st is not None:
                         queue_root=mgr_queue_root,
                         ledger_path=LEDGER_PATH,
                         member_id=mgr_team_member_id,
-                        requested_sfp_count=st.session_state.get("mgr_sfp_count"),
+                        requested_sfp_count=team_assignment_counts["sfp"],
+                    )
+                    team_assignment_preview = build_team_assignment_preview(
+                        team_preset,
+                        queue_root=mgr_queue_root,
+                        ledger_path=LEDGER_PATH,
+                        member_id=mgr_team_member_id,
                     )
                     nic_range = _preset_scene_count_range(
                         team_preset,
@@ -1669,8 +1761,8 @@ if st is not None:
                     )
                     st.session_state["mgr_param_strategy"] = str(team_preset.strategy)
                     st.session_state["mgr_seed"] = int(team_preset.base_seed)
-                    st.session_state["mgr_sc_count"] = mgr_team_sc_default_count
-                    st.session_state["mgr_sfp_count"] = int(team_state["selected_sfp_count"])
+                    st.session_state["mgr_sc_count"] = int(team_assignment_counts["sc"])
+                    st.session_state["mgr_sfp_count"] = int(team_assignment_counts["sfp"])
                     for range_key in ("nic_translation", "nic_yaw", "sc_translation"):
                         st.session_state[f"mgr_range_{range_key}_range"] = validated_preset_ranges[range_key]
                     for range_key in ("gripper_xy", "gripper_z", "gripper_rpy"):
@@ -1682,7 +1774,7 @@ if st is not None:
 
         if team_mode_active:
             st.caption(
-                "Team mode는 현재 SFP config 생성만 지원합니다. `큐 루트`는 로컬 config 출력 위치만 바꾸고, "
+                "Team mode는 선택한 member의 preset assignments를 그대로 큐에 추가합니다. `큐 루트`는 로컬 config 출력 위치만 바꾸고, "
                 f"슬롯 예약은 항상 전역 ledger `{LEDGER_PATH}` 기준으로 처리됩니다."
             )
 
@@ -1767,10 +1859,46 @@ if st is not None:
                 ),
             )
             team_slot_summary = build_team_slot_summary(team_preset, team_state, mgr_team_member_id)
+            try:
+                team_assignment_counts = build_team_assignment_task_counts(
+                    team_preset,
+                    mgr_team_member_id,
+                )
+                team_state = build_team_mode_state(
+                    team_preset,
+                    queue_root=mgr_queue_root,
+                    ledger_path=LEDGER_PATH,
+                    member_id=mgr_team_member_id,
+                    requested_sfp_count=team_assignment_counts["sfp"],
+                )
+                team_assignment_preview = build_team_assignment_preview(
+                    team_preset,
+                    queue_root=mgr_queue_root,
+                    ledger_path=LEDGER_PATH,
+                    member_id=mgr_team_member_id,
+                )
+                team_slot_summary = build_team_slot_summary(
+                    team_preset,
+                    team_state,
+                    mgr_team_member_id,
+                )
+            except PresetError as exc:
+                team_mode_error = exc
+                st.error(f"팀 assignment 적용 실패: {team_mode_error}")
         if team_slot_summary is not None:
             st.caption(team_slot_summary["caption"])
             if team_slot_summary["slot_exhausted_error"]:
                 st.error(team_slot_summary["slot_exhausted_error"])
+        if team_widgets_locked and team_assignment_preview is not None:
+            assignment_parts = [
+                (
+                    f"{row['trial_id']}({str(row['task_type']).upper()}) "
+                    f"{int(row['count'])}개 target="
+                    f"{row['fixed_target']['rail']}/{row['fixed_target']['port']}"
+                )
+                for row in team_assignment_preview["rows"]
+            ]
+            st.caption("할당: " + " · ".join(assignment_parts))
     
         # 기본 파라미터
         col_sfp, col_sc = st.columns(2)
@@ -1783,8 +1911,6 @@ if st is not None:
                 key="mgr_sfp_count",
                 disabled=bool(
                     team_widgets_locked
-                    and team_state is not None
-                    and int(team_state["remaining_slots"]) == 0
                 ),
                 help=(
                     "target cycling ON 시 SFP 10종 target (5 rail × 2 port)을 "
@@ -1794,7 +1920,7 @@ if st is not None:
                 **widget_default_kwargs(
                     st.session_state,
                     "mgr_sfp_count",
-                    int(team_state["selected_sfp_count"]) if team_widgets_locked and team_state is not None else 20,
+                    int(team_assignment_counts["sfp"]) if team_widgets_locked and team_assignment_counts is not None else 20,
                 ),
             )
         with col_sc:
@@ -1813,7 +1939,7 @@ if st is not None:
                 **widget_default_kwargs(
                     st.session_state,
                     "mgr_sc_count",
-                    mgr_team_sc_default_count if team_widgets_locked else 10,
+                    int(team_assignment_counts["sc"]) if team_widgets_locked and team_assignment_counts is not None else 10,
                 ),
             )
     
@@ -2061,13 +2187,18 @@ if st is not None:
         start_sfp = 0
         start_sc = 0
         if team_widgets_locked and team_state is not None:
-            if team_state["preview_filename"] is None:
+            if team_assignment_preview is None or team_assignment_preview["slot_error"]:
                 st.info("생성 가능한 팀 슬롯이 없습니다.")
             else:
+                preview_parts = [
+                    (
+                        f"{row['trial_id']}: {row['file_range']} "
+                        f"({str(row['task_type']).upper()} {int(row['count'])}개)"
+                    )
+                    for row in team_assignment_preview["rows"]
+                ]
                 st.info(
-                    "생성될 파일: "
-                    f"{team_state['preview_filename']} "
-                    f"(start index {int(team_state['next_start_index'])})"
+                    "생성될 파일: " + " · ".join(preview_parts)
                 )
         elif mgr_queue_root.exists():
             from aic_collector.job_queue import next_sample_index as _next_idx
@@ -2089,8 +2220,16 @@ if st is not None:
                 st.info("생성할 count가 0입니다.")
     
         # 생성 버튼 — slider가 min≤max를 구조적으로 보장하므로 추가 검증 불필요
-        total_new = int(mgr_sfp_count) if team_widgets_locked else int(mgr_sfp_count) + int(mgr_sc_count)
-        btn_disabled = total_new == 0 or team_mode_error is not None
+        total_new = (
+            int(team_assignment_preview["total_count"])
+            if team_widgets_locked and team_assignment_preview is not None
+            else int(mgr_sfp_count) + int(mgr_sc_count)
+        )
+        btn_disabled = (
+            total_new == 0
+            or team_mode_error is not None
+            or bool(team_assignment_preview and team_assignment_preview["slot_error"])
+        )
         if st.button(
             f"📁 큐에 추가 ({total_new}개 생성)",
             type="primary",
@@ -2102,20 +2241,22 @@ if st is not None:
                 st.error(f"템플릿 없음: {template}")
             elif team_widgets_locked and team_preset is not None and mgr_team_member_id is not None:
                 try:
-                    submit_preset = build_team_submit_preset(
+                    results = submit_member_claim(
                         team_preset,
-                        sfp_count=int(mgr_sfp_count),
-                    )
-                    result = submit_team_claim(
-                        submit_preset,
                         member_id=mgr_team_member_id,
-                        task_type="sfp",
                         queue_root=mgr_queue_root,
                         ledger_path=LEDGER_PATH,
                         template_path=template,
                     )
+                    result_parts = []
+                    assignments = team_preset.member_assignments[mgr_team_member_id]
+                    for assignment, result in zip(assignments, results, strict=True):
+                        result_parts.append(
+                            f"{assignment.trial_id}: start_index={result.start_index}, count={result.written_count}"
+                        )
                     st.success(
-                        f"팀 claim 완료: member={mgr_team_member_id}, start_index={result.start_index}"
+                        f"팀 claim 완료: member={mgr_team_member_id}, "
+                        + " · ".join(result_parts)
                     )
                     st.rerun()
                 except SlotExhausted as exc:
