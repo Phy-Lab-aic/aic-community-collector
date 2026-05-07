@@ -304,6 +304,35 @@ uv run aic-collector-worker --root configs/train --recover
 # SFP는 내 policy, SC는 cheatcode로 분리 실행
 uv run aic-collector-worker --root configs/train \
     --policy-sfp MyVisionPolicy --policy-sc cheatcode
+
+# 수집 성공 직후 같은 워커가 LeRobot 변환 → Hugging Face 업로드 → remote verify까지 수행
+uv run aic-collector-worker --root configs/train --task all \
+    --limit 800 --upload-batch-size 20 \
+    --policy cheatcode --collect-episode true \
+    --hf-repo-id org_or_user/dataset \
+    --converter-path third_party/rosbag-to-lerobot
+```
+
+`--limit`은 총 처리 수이고 `--upload-batch-size`는 HF 업로드/정리 묶음 크기입니다.
+예를 들어 `--limit 800 --upload-batch-size 20`은 20개씩 수집→변환→업로드→remote verify→raw/staging 삭제를 40회 반복합니다.
+LeRobot/HF 업로드를 켜도 별도 자동화 워커를 실행하지 않습니다.
+
+HF 설정은 실행 전에 한 번만 해두면 됩니다. Dataset repo를 만든 뒤 repo id를
+`org_or_user/dataset` 형태로 복사하고, 쓰기 권한이 있는 토큰을 셸 환경변수로
+넣으세요. 토큰은 UI/설정 파일/manifest에 저장하지 않습니다.
+
+```bash
+export AIC_HF_REPO_ID=org_or_user/dataset
+export HF_TOKEN=hf_...
+
+uv run python - <<'PY'
+import os
+from huggingface_hub import HfApi
+
+repo_id = os.environ["AIC_HF_REPO_ID"]
+files = HfApi().list_repo_files(repo_id=repo_id, repo_type="dataset")
+print(f"HF 접근 확인 완료: {repo_id} ({len(files)}개 파일 확인)")
+PY
 ```
 
 ### 단일 config 실행

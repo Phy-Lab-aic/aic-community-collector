@@ -33,6 +33,28 @@ class SlotExhausted(PresetError):
 
 
 @dataclass(frozen=True)
+class TrialSpec:
+    """Per-trial task dispatch + fixed target.
+
+    A trial id (e.g. "trial_1") binds a task_type and a (rail, port) pair so
+    every member assigned to that trial collects the same scenario family.
+    """
+
+    trial_id: str
+    task_type: Literal["sfp", "sc"]
+    rail: int
+    port: str
+
+
+@dataclass(frozen=True)
+class MemberAssignment:
+    """Per-member trial allotment."""
+
+    trial_id: str
+    count: int
+
+
+@dataclass(frozen=True)
 class TeamPreset:
     base_seed: int
     shard_stride: int
@@ -41,8 +63,10 @@ class TeamPreset:
     ranges: Mapping[str, Any]
     scene: Mapping[str, Any]
     tasks: Mapping[str, int]
-    members: tuple[Mapping[str, str], ...]
+    members: tuple[Mapping[str, Any], ...]
     preset_hash: str
+    trials: Mapping[str, TrialSpec] = MappingProxyType({})
+    member_assignments: Mapping[str, tuple[MemberAssignment, ...]] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -242,11 +266,11 @@ def _validate_tasks(value: Any) -> dict[str, int]:
     return validated
 
 
-def _validate_members(value: Any) -> tuple[Mapping[str, str], ...]:
+def _validate_members(value: Any) -> tuple[Mapping[str, Any], ...]:
     if not isinstance(value, list):
         raise PresetError("Invalid members field: members")
 
-    members: list[Mapping[str, str]] = []
+    members: list[Mapping[str, Any]] = []
     member_ids: set[str] = set()
     for index, member in enumerate(value):
         if not isinstance(member, dict):
@@ -260,13 +284,117 @@ def _validate_members(value: Any) -> tuple[Mapping[str, str], ...]:
         if member["name"] is None:
             raise PresetError(f"Invalid member field: members[{index}].name")
 
-        normalized = {str(k): str(v) for k, v in member.items()}
+        normalized: dict[str, Any] = {}
+        for k, v in member.items():
+            key = str(k)
+            if key == "assignment":
+                normalized[key] = v if isinstance(v, dict) else {}
+            elif key == "assignments":
+                normalized[key] = v if isinstance(v, list) else []
+            else:
+                normalized[key] = str(v) if v is not None else None
         member_id = normalized["id"]
         if member_id in member_ids:
             raise PresetError(f"Invalid members field: duplicate member id: {member_id}")
         member_ids.add(member_id)
         members.append(MappingProxyType(normalized))
     return tuple(members)
+
+
+_TRIAL_PORT_RE = re.compile(r"^(sfp_port|sc_port)_\d+$")
+
+
+def _validate_trials(value: Any) -> dict[str, TrialSpec]:
+    """Optional `trials` block. Empty/missing returns {}."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise PresetError("Invalid trials field: trials")
+
+    out: dict[str, TrialSpec] = {}
+    for raw_id, spec in value.items():
+        trial_id = str(raw_id)
+        if not isinstance(spec, dict):
+            raise PresetError(f"Invalid trials field: trials.{trial_id}")
+        task_type = spec.get("task_type")
+        if task_type not in ("sfp", "sc"):
+            raise PresetError(f"trials.{trial_id}.task_type must be 'sfp' or 'sc'")
+        ft = spec.get("fixed_target")
+        if not isinstance(ft, dict):
+            raise PresetError(f"trials.{trial_id}.fixed_target must be a mapping")
+        rail = ft.get("rail")
+        port = ft.get("port")
+        if isinstance(rail, bool) or not isinstance(rail, int) or rail < 0:
+            raise PresetError(f"trials.{trial_id}.fixed_target.rail must be a non-negative int")
+        if not isinstance(port, str) or not _TRIAL_PORT_RE.match(port):
+            raise PresetError(
+                f"trials.{trial_id}.fixed_target.port must match sfp_port_N or sc_port_N"
+            )
+        out[trial_id] = TrialSpec(
+            trial_id=trial_id, task_type=task_type, rail=int(rail), port=port,
+        )
+    return out
+
+
+def _validate_one_assignment(
+    raw: Any, *, trials: Mapping[str, TrialSpec], path: str,
+) -> MemberAssignment:
+    if not isinstance(raw, dict):
+        raise PresetError(f"Invalid assignment field: {path}")
+    trial_id = raw.get("trial")
+    count = raw.get("count")
+    if not isinstance(trial_id, str):
+        raise PresetError(f"{path}.trial must be a string")
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        raise PresetError(f"{path}.count must be a positive int")
+    if trial_id not in trials:
+        raise PresetError(f"{path}.trial '{trial_id}' is not declared in trials")
+    return MemberAssignment(trial_id=trial_id, count=int(count))
+
+
+def _extract_assignments(
+    members: tuple[Mapping[str, Any], ...],
+    trials: Mapping[str, TrialSpec],
+) -> dict[str, tuple[MemberAssignment, ...]]:
+    """Read each member's optional assignment block(s).
+
+    Accepts either `assignment:` (single mapping) or `assignments:` (list of
+    mappings). Members without any assignment are omitted from the returned
+    mapping. The two forms are mutually exclusive per member.
+    """
+    out: dict[str, tuple[MemberAssignment, ...]] = {}
+    for index, member in enumerate(members):
+        single = member.get("assignment")
+        multi = member.get("assignments")
+        if single and multi:
+            raise PresetError(
+                f"members[{index}]: use either `assignment` or `assignments`, not both"
+            )
+        member_id = str(member["id"])
+        if multi:
+            if not isinstance(multi, list) or not multi:
+                raise PresetError(f"members[{index}].assignments must be a non-empty list")
+            assignments = tuple(
+                _validate_one_assignment(
+                    item, trials=trials, path=f"members[{index}].assignments[{i}]"
+                )
+                for i, item in enumerate(multi)
+            )
+            seen_trials: set[str] = set()
+            for a in assignments:
+                if a.trial_id in seen_trials:
+                    raise PresetError(
+                        f"members[{index}].assignments has duplicate trial: {a.trial_id}"
+                    )
+                seen_trials.add(a.trial_id)
+            out[member_id] = assignments
+        elif single:
+            out[member_id] = (
+                _validate_one_assignment(
+                    single, trials=trials, path=f"members[{index}].assignment"
+                ),
+            )
+    return out
 
 
 def _validate_scene(value: Any) -> dict[str, Any]:
@@ -294,12 +422,20 @@ def _thaw(value: Any) -> Any:
     return value
 
 
-def _training_cfg_from_preset(preset: TeamPreset) -> dict[str, Any]:
+def _training_cfg_from_preset(
+    preset: TeamPreset,
+    trial_spec: TrialSpec | None = None,
+) -> dict[str, Any]:
     scene_cfg = _thaw(preset.scene)
     collection_cfg: dict[str, Any] = {}
     fixed_target = scene_cfg.pop("fixed_target", None)
     if fixed_target is not None:
         collection_cfg["fixed_target"] = _thaw(fixed_target)
+
+    if trial_spec is not None:
+        collection_cfg["fixed_target"] = {
+            trial_spec.task_type: {"rail": trial_spec.rail, "port": trial_spec.port}
+        }
 
     training_cfg: dict[str, Any] = {
         "training": {
@@ -404,6 +540,185 @@ def adjust_claim_count(ledger_path: Path, entry_id: int, actual_count: int) -> N
         entries = _ledger_entries(ledger_path)
         _adjust_claim_count_locked(entries, entry_id, actual_count)
         _write_ledger_entries(ledger_path, entries)
+
+
+_RUN_DIR_RE = re.compile(r"^run_\d+_\d+_(sfp|sc)_(\d+)$")
+
+
+def _trial_total_from_scoring_run(path: Path) -> float | None:
+    """Read scoring_run.yaml and return the maximum trial_<N>.total value.
+
+    Queue mode produces 1 trial per run, so max == only-trial. Returns None
+    when the file is absent, malformed, or has no scorable trial entry.
+    """
+    if not path.exists():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    totals: list[float] = []
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.startswith("trial_"):
+            continue
+        if not isinstance(value, dict):
+            continue
+        # Reuse the same tier-sum convention as postprocess_run.split_scoring.
+        tier_scores: list[float] = []
+        for tier_key in ("tier_1", "tier_2", "tier_3"):
+            tier = value.get(tier_key)
+            if isinstance(tier, dict) and isinstance(tier.get("score"), (int, float)):
+                tier_scores.append(float(tier["score"]))
+        if tier_scores:
+            totals.append(sum(tier_scores))
+        elif isinstance(value.get("total"), (int, float)):
+            totals.append(float(value["total"]))
+    if not totals:
+        return None
+    return max(totals)
+
+
+def _scan_run_scores(output_root: Path) -> dict[str, dict[int, float]]:
+    """Walk output_root for run_*_<task>_<index>/scoring_run.yaml.
+
+    Returns: {task_type: {sample_index: trial_total_score}}. Indices that
+    appear in multiple runs (re-collected) keep the *latest* score by run
+    directory name (timestamp-prefixed sort).
+    """
+    by_task: dict[str, dict[int, float]] = {"sfp": {}, "sc": {}}
+    if not output_root.exists():
+        return by_task
+    # Sort so later timestamps overwrite earlier scores.
+    for child in sorted(output_root.iterdir()):
+        if not child.is_dir():
+            continue
+        m = _RUN_DIR_RE.match(child.name)
+        if not m:
+            continue
+        task_type, idx_str = m.group(1), m.group(2)
+        score = _trial_total_from_scoring_run(child / "scoring_run.yaml")
+        if score is None:
+            continue
+        by_task.setdefault(task_type, {})[int(idx_str)] = score
+    return by_task
+
+
+def reconcile_with_score_threshold(
+    ledger_path: Path,
+    output_root: Path,
+    *,
+    threshold: float = 95.0,
+) -> list[dict[str, Any]]:
+    """Annotate every ledger entry with score-gate metadata.
+
+    For each entry whose sample_index window contains run outputs in
+    `output_root`, computes trial total scores from scoring_run.yaml and
+    records:
+      - low_score_indices:    sorted list of indices with score < threshold
+      - high_score_indices:   sorted list of indices with score >= threshold
+      - missing_indices:      claimed indices that have no scored run yet
+      - score_validated_count: len(high_score_indices)
+      - score_threshold:      the threshold used
+      - score_reconciled_at:  ISO-UTC timestamp
+
+    Idempotent: re-running with the same on-disk state produces the same
+    payload modulo `score_reconciled_at`. Adds metadata only — does not
+    touch failed_indices or validated_count from queue-state reconciliation.
+    """
+    if threshold < 0:
+        raise ValueError(f"threshold must be non-negative (got {threshold})")
+    with _ledger_lock(ledger_path):
+        entries = _ledger_entries(ledger_path)
+        scores_by_task = _scan_run_scores(output_root)
+
+        now = _iso_utc_now()
+        for entry in entries:
+            task_type = entry.get("task_type")
+            start_index = entry.get("start_index")
+            count = entry.get("count")
+            if (
+                not isinstance(task_type, str)
+                or isinstance(start_index, bool)
+                or isinstance(count, bool)
+                or not isinstance(start_index, int)
+                or not isinstance(count, int)
+                or count <= 0
+            ):
+                continue
+            window_end = start_index + count
+            task_scores = scores_by_task.get(task_type, {})
+            low: list[int] = []
+            high: list[int] = []
+            missing: list[int] = []
+            for idx in range(start_index, window_end):
+                if idx not in task_scores:
+                    missing.append(idx)
+                elif task_scores[idx] < threshold:
+                    low.append(idx)
+                else:
+                    high.append(idx)
+            entry["low_score_indices"] = low
+            entry["high_score_indices"] = high
+            entry["missing_indices"] = missing
+            entry["score_validated_count"] = len(high)
+            entry["score_threshold"] = float(threshold)
+            entry["score_reconciled_at"] = now
+
+        _write_ledger_entries(ledger_path, entries)
+        return entries
+
+
+def requeue_low_score_for_member(
+    preset: TeamPreset,
+    *,
+    member_id: str,
+    queue_root: Path,
+    ledger_path: Path,
+    template_path: Path,
+) -> tuple[SubmitResult, ...]:
+    """Submit replacement batches for each of a member's trial assignments.
+
+    For every trial id this member is assigned to, sums low_score_indices
+    across the matching ledger entries and issues one submit_team_claim
+    sized to that count. Returns one SubmitResult per trial that needed
+    replacements (in trial declaration order). Returns an empty tuple
+    when nothing needs to be re-queued.
+    """
+    assignments = preset.member_assignments.get(member_id)
+    if not assignments:
+        raise PresetError(f"Member has no assignment: {member_id}")
+
+    with _ledger_lock(ledger_path):
+        entries = _ledger_entries(ledger_path)
+
+    results: list[SubmitResult] = []
+    for a in assignments:
+        trial_spec = preset.trials.get(a.trial_id)
+        if trial_spec is None:
+            raise PresetError(f"Assignment references unknown trial: {a.trial_id}")
+        lows: list[int] = []
+        for entry in entries:
+            if entry.get("member_id") != member_id:
+                continue
+            if entry.get("trial_id") != a.trial_id:
+                continue
+            lows.extend(int(i) for i in entry.get("low_score_indices") or [])
+        if not lows:
+            continue
+        result = submit_team_claim(
+            preset,
+            member_id=member_id,
+            task_type=trial_spec.task_type,
+            queue_root=queue_root,
+            ledger_path=ledger_path,
+            template_path=template_path,
+            trial_spec=trial_spec,
+            requested_count=len(lows),
+        )
+        results.append(result)
+    return tuple(results)
 
 
 def reconcile_ledger_with_queue(
@@ -637,8 +952,11 @@ def submit_team_claim(
     queue_root: Path,
     ledger_path: Path,
     template_path: Path,
+    trial_spec: TrialSpec | None = None,
+    requested_count: int | None = None,
 ) -> SubmitResult:
-    requested_count = preset.tasks[task_type]
+    if requested_count is None:
+        requested_count = preset.tasks[task_type]
     with _ledger_lock(ledger_path):
         entries = _ledger_entries(ledger_path)
         start_index = next_start_index_in_slot(
@@ -670,11 +988,17 @@ def submit_team_claim(
             queue_root=queue_root,
             preset_hash=preset.preset_hash,
         )
+        if trial_spec is not None:
+            entries[entry_id]["trial_id"] = trial_spec.trial_id
+            entries[entry_id]["fixed_target"] = {
+                "rail": trial_spec.rail,
+                "port": trial_spec.port,
+            }
         _write_ledger_entries(ledger_path, entries)
 
         try:
             plans = sample_scenes(
-                _training_cfg_from_preset(preset),
+                _training_cfg_from_preset(preset, trial_spec=trial_spec),
                 task_type,
                 requested_count,
                 preset.base_seed,
@@ -730,6 +1054,8 @@ def load_preset(path: Path) -> TeamPreset | None:
     scene = _freeze(_validate_scene(_require_path(raw, "scene")))
     tasks = _freeze(_validate_tasks(_require_path(raw, "tasks")))
     members = _validate_members(_require_path(raw, "members"))
+    trials = _validate_trials(raw.get("trials"))
+    assignments = _extract_assignments(members, trials)
 
     return TeamPreset(
         base_seed=base_seed,
@@ -741,7 +1067,47 @@ def load_preset(path: Path) -> TeamPreset | None:
         tasks=tasks,
         members=members,
         preset_hash=_canonical_hash(raw),
+        trials=MappingProxyType(dict(trials)),
+        member_assignments=MappingProxyType({k: tuple(v) for k, v in assignments.items()}),
     )
+
+
+def submit_member_claim(
+    preset: TeamPreset,
+    *,
+    member_id: str,
+    queue_root: Path,
+    ledger_path: Path,
+    template_path: Path,
+) -> tuple[SubmitResult, ...]:
+    """Dispatch every assignment for a member into queue claims.
+
+    For each assignment in `preset.member_assignments[member_id]` (kept in
+    yaml declaration order), resolves the trial spec (task_type + fixed
+    target) and delegates to submit_team_claim with the spec injected into
+    cfg.training.collection.fixed_target. Returns one SubmitResult per
+    assignment, in the same order.
+    """
+    assignments = preset.member_assignments.get(member_id)
+    if not assignments:
+        raise PresetError(f"Member has no assignment: {member_id}")
+    results: list[SubmitResult] = []
+    for a in assignments:
+        trial_spec = preset.trials.get(a.trial_id)
+        if trial_spec is None:
+            raise PresetError(f"Assignment references unknown trial: {a.trial_id}")
+        result = submit_team_claim(
+            preset,
+            member_id=member_id,
+            task_type=trial_spec.task_type,
+            queue_root=queue_root,
+            ledger_path=ledger_path,
+            template_path=template_path,
+            trial_spec=trial_spec,
+            requested_count=a.count,
+        )
+        results.append(result)
+    return tuple(results)
 
 
 def _cli_reconcile(args: argparse.Namespace) -> int:
@@ -757,6 +1123,182 @@ def _cli_reconcile(args: argparse.Namespace) -> int:
         print(
             f"{member_id}/{task_type}: {count} written, "
             f"{len(failed)} failed, {validated} validated"
+        )
+    return 0
+
+
+def _cli_reconcile_score(args: argparse.Namespace) -> int:
+    entries = reconcile_with_score_threshold(
+        Path(args.ledger),
+        Path(args.output_root),
+        threshold=float(args.threshold),
+    )
+    for entry in entries:
+        member_id = entry.get("member_id")
+        task_type = entry.get("task_type")
+        count = entry.get("count")
+        low = entry.get("low_score_indices") or []
+        high = entry.get("high_score_indices") or []
+        missing = entry.get("missing_indices") or []
+        print(
+            f"{member_id}/{task_type}: {count} claimed, "
+            f"{len(high)} validated (>= {args.threshold}), "
+            f"{len(low)} low-score, {len(missing)} missing"
+        )
+    return 0
+
+
+def _cli_requeue_low_score(args: argparse.Namespace) -> int:
+    preset = load_preset(Path(args.preset))
+    if preset is None:
+        print(f"[error] preset missing: {args.preset}", file=sys.stderr)
+        return 2
+    try:
+        results = requeue_low_score_for_member(
+            preset,
+            member_id=args.member,
+            queue_root=Path(args.queue_root),
+            ledger_path=Path(args.ledger),
+            template_path=Path(args.template),
+        )
+    except SlotExhausted as exc:
+        print(f"[error] slot exhausted: {exc}", file=sys.stderr)
+        return 1
+    except PresetError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
+    if not results:
+        print(f"member={args.member}: nothing to requeue (no low-score indices)")
+        return 0
+    for r in results:
+        print(
+            f"requeued: member={args.member} "
+            f"start_index={r.start_index} written={r.written_count}"
+        )
+    return 0
+
+
+def _cli_aggregate_manifests(args: argparse.Namespace) -> int:
+    from aic_collector.automation.round_helpers import aggregate_manifests
+
+    paths = [Path(p) for p in args.manifest]
+    rollup = aggregate_manifests(paths)
+    print(f"manifests scanned: {len(paths)}")
+    print(f"unique items:      {len(rollup['items'])}")
+    print("state counts:")
+    for state, count in sorted(rollup["state_counts"].items(), key=lambda kv: -kv[1]):
+        print(f"  {state:>22}: {count}")
+    if rollup["failures"]:
+        print(f"failures ({len(rollup['failures'])}):")
+        for event in rollup["failures"][:20]:
+            print(f"  {event.get('item_id')} -> {event.get('state')}")
+        if len(rollup["failures"]) > 20:
+            print(f"  ... and {len(rollup['failures']) - 20} more")
+    return 0
+
+
+def _cli_verify_repo(args: argparse.Namespace) -> int:
+    try:
+        from huggingface_hub import HfApi  # type: ignore
+    except ImportError:
+        print("[error] huggingface_hub not installed", file=sys.stderr)
+        return 2
+    from aic_collector.automation.round_helpers import verify_repo_against_ledger
+
+    api = HfApi()
+    report = verify_repo_against_ledger(
+        api=api,
+        repo_id=args.repo_id,
+        ledger_path=Path(args.ledger),
+        repo_type=args.repo_type,
+        min_files_per_item=args.min_files_per_item,
+    )
+    print(
+        f"repo={report['repo_id']} ok={report['ok']} "
+        f"min_files_per_item={report['min_files_per_item']}"
+    )
+    if report["ledger_errors"]:
+        print("ledger errors:")
+        for err in report["ledger_errors"]:
+            print(f"  - {err}")
+    for task, stats in report["tasks"].items():
+        print(
+            f"  {task}: expected={stats['expected']} present={stats['present']} "
+            f"missing={len(stats['missing'])} extra={len(stats['extra'])} "
+            f"below_min={len(stats['below_min_indices'])}"
+        )
+        if stats["missing"]:
+            preview = stats["missing"][:10]
+            tail = "" if len(stats["missing"]) <= 10 else f" ... (+{len(stats['missing']) - 10} more)"
+            print(f"    missing indices: {preview}{tail}")
+        if stats["below_min_indices"]:
+            preview = stats["below_min_indices"][:10]
+            tail = ("" if len(stats["below_min_indices"]) <= 10
+                    else f" ... (+{len(stats['below_min_indices']) - 10} more)")
+            print(f"    below-min indices: {preview}{tail}")
+    return 0 if report["ok"] else 1
+
+
+def _cli_retry_uploads(args: argparse.Namespace) -> int:
+    try:
+        from huggingface_hub import HfApi  # type: ignore
+    except ImportError:
+        print("[error] huggingface_hub not installed", file=sys.stderr)
+        return 2
+    from aic_collector.automation.round_helpers import retry_failed_uploads
+
+    api = HfApi()
+    report = retry_failed_uploads(
+        manifest_path=Path(args.manifest),
+        repo_id=args.repo_id,
+        api=api,
+        path_prefix=args.path_prefix,
+        max_attempts=args.max_attempts,
+        backoff_seconds=args.backoff_seconds,
+    )
+    if not report:
+        print("nothing to retry")
+        return 0
+    succeeded = sum(1 for r in report if r["ok"])
+    failed = len(report) - succeeded
+    print(f"retried: {len(report)}  succeeded: {succeeded}  still-failed: {failed}")
+    for r in report:
+        flag = "OK" if r["ok"] else ("MISS" if r["missing_folder"] else "FAIL")
+        line = (
+            f"  [{flag}] {r['item_id']} prev={r['previous_state']} attempts={r['attempts']}"
+        )
+        if r["error"]:
+            line += f" err={r['error']}"
+        print(line)
+    return 0 if failed == 0 else 1
+
+
+def _cli_submit_member(args: argparse.Namespace) -> int:
+    preset = load_preset(Path(args.preset))
+    if preset is None:
+        print(f"[error] preset missing: {args.preset}", file=sys.stderr)
+        return 2
+    try:
+        results = submit_member_claim(
+            preset,
+            member_id=args.member,
+            queue_root=Path(args.queue_root),
+            ledger_path=Path(args.ledger),
+            template_path=Path(args.template),
+        )
+    except SlotExhausted as exc:
+        print(f"[error] slot exhausted: {exc}", file=sys.stderr)
+        return 1
+    except PresetError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
+    assignments = preset.member_assignments[args.member]
+    for a, result in zip(assignments, results):
+        trial = preset.trials[a.trial_id]
+        print(
+            f"submitted: member={args.member} trial={a.trial_id} "
+            f"task={trial.task_type} fixed_target=(rail={trial.rail},port={trial.port}) "
+            f"start_index={result.start_index} written={result.written_count}"
         )
     return 0
 
@@ -797,6 +1339,26 @@ def _build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--queue-root", required=True)
     rec.set_defaults(func=_cli_reconcile)
 
+    rec_score = sub.add_parser(
+        "reconcile-score",
+        help="Annotate ledger with trial total < threshold indices",
+    )
+    rec_score.add_argument("--ledger", required=True)
+    rec_score.add_argument("--output-root", required=True)
+    rec_score.add_argument("--threshold", type=float, default=95.0)
+    rec_score.set_defaults(func=_cli_reconcile_score)
+
+    requeue = sub.add_parser(
+        "requeue-low-score",
+        help="Submit replacement configs for a member's low-score indices",
+    )
+    requeue.add_argument("--preset", required=True)
+    requeue.add_argument("--ledger", required=True)
+    requeue.add_argument("--queue-root", required=True)
+    requeue.add_argument("--template", required=True)
+    requeue.add_argument("--member", required=True)
+    requeue.set_defaults(func=_cli_requeue_low_score)
+
     sub_submit = sub.add_parser("submit", help="Append a claim and write configs")
     sub_submit.add_argument("--preset", required=True)
     sub_submit.add_argument("--ledger", required=True)
@@ -805,6 +1367,51 @@ def _build_parser() -> argparse.ArgumentParser:
     sub_submit.add_argument("--member", required=True)
     sub_submit.add_argument("--task-type", required=True, choices=("sfp", "sc"))
     sub_submit.set_defaults(func=_cli_submit)
+
+    sub_member = sub.add_parser(
+        "submit-member",
+        help="Append a claim using the member's preset assignment (trial + count)",
+    )
+    sub_member.add_argument("--preset", required=True)
+    sub_member.add_argument("--ledger", required=True)
+    sub_member.add_argument("--queue-root", required=True)
+    sub_member.add_argument("--template", required=True)
+    sub_member.add_argument("--member", required=True)
+    sub_member.set_defaults(func=_cli_submit_member)
+
+    agg = sub.add_parser(
+        "aggregate-manifests",
+        help="Roll up several PCs' manifest.jsonl files into one summary",
+    )
+    agg.add_argument("--manifest", action="append", required=True,
+                     help="Path to a manifest.jsonl. Pass --manifest multiple times.")
+    agg.set_defaults(func=_cli_aggregate_manifests)
+
+    verify = sub.add_parser(
+        "verify-repo",
+        help="Cross-check the HF dataset repo's file inventory against the ledger",
+    )
+    verify.add_argument("--ledger", required=True)
+    verify.add_argument("--repo-id", required=True)
+    verify.add_argument("--repo-type", default="dataset")
+    verify.add_argument(
+        "--min-files-per-item", type=int, default=1,
+        help="Minimum file count per sample_index for it to count as present. "
+             "Raise to your expected per-item artifact count to gate on "
+             "artifact completeness (default 1: any-file-present)",
+    )
+    verify.set_defaults(func=_cli_verify_repo)
+
+    retry = sub.add_parser(
+        "retry-uploads",
+        help="Re-issue uploads for manifest items in a retryable failure state",
+    )
+    retry.add_argument("--manifest", required=True)
+    retry.add_argument("--repo-id", required=True)
+    retry.add_argument("--path-prefix", default="")
+    retry.add_argument("--max-attempts", type=int, default=3)
+    retry.add_argument("--backoff-seconds", type=float, default=2.0)
+    retry.set_defaults(func=_cli_retry_uploads)
 
     return parser
 

@@ -349,7 +349,7 @@ uv run aic-collector-worker --root configs/train --recover
 |------|------|------|
 | `--root` | `configs/train` | 큐 루트 |
 | `--task` | `all` | `all`/`sfp`/`sc` |
-| `--limit` | (없음) | 최대 처리 수 |
+| `--limit` | (없음) | 이번 워커 실행의 총 처리 config/episode 수 |
 | `--policy` | `cheatcode` | 기본 policy |
 | `--policy-sfp` / `--policy-sc` | (없음) | task별 분리 |
 | `--act-model-path` | (없음) | act/hybrid용 |
@@ -360,6 +360,30 @@ uv run aic-collector-worker --root configs/train --recover
 | `--timeout` | (없음) | 1 config 최대 초 |
 | `--recover` | off | 시작 전 running→pending |
 | `--log` | `/tmp/aic_worker_run.log` | 엔진 실행 로그(append) |
+| `--hf-repo-id` | (없음) | 지정하면 같은 워커가 성공 run을 LeRobot으로 변환하고 HF 업로드/remote verify까지 수행 |
+| `--upload-batch-size` | `1` | 몇 개씩 묶어 HF 업로드/remote verify/정리를 할지. 예: `--limit 800 --upload-batch-size 20` = 20개씩 40회 |
+| `--cleanup-after-upload` / `--no-cleanup-after-upload` | on | remote verify 후 raw run_dir/staging/LeRobot 임시 폴더 삭제 여부 |
+| `--automation-manifest` | `<output-root>/worker_lerobot_upload_manifest.jsonl` | 업로드/검증 manifest |
+| `--staging-root` / `--lerobot-root` | `/tmp/aic_worker_lerobot_*` | 변환 입력 staging / LeRobot 출력 루트 |
+| `--converter-path` | `third_party/rosbag-to-lerobot` | rosbag-to-lerobot 경로 |
+
+LeRobot/HF 업로드를 켤 때는 `--collect-episode true`를 같이 사용하세요.
+HF 인증은 UI나 manifest에 저장하지 않고 `HF_TOKEN` 또는 `huggingface-cli login`을 사용합니다.
+처음 설정하는 사용자는 아래처럼 repo id와 토큰만 셸에 넣고 접근 확인 후 실행하면 됩니다.
+
+```bash
+export AIC_HF_REPO_ID=org_or_user/dataset
+export HF_TOKEN=hf_...
+
+uv run python - <<'PY'
+import os
+from huggingface_hub import HfApi
+
+repo_id = os.environ["AIC_HF_REPO_ID"]
+files = HfApi().list_repo_files(repo_id=repo_id, repo_type="dataset")
+print(f"HF 접근 확인 완료: {repo_id} ({len(files)}개 파일 확인)")
+PY
+```
 
 ### 단일 prebuilt config 실행
 

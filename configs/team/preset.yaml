@@ -1,7 +1,20 @@
-# Team-wide preset for blindspot-fix collection round (2026-04-26).
+# Team-wide preset for trial-sharded 1800-episode round (2026-05-07, layout v3).
 # Edits are changes to the team contract - open a PR.
+#
+# Layout:
+#   trial_1: SFP, NIC rail 0 (sfp_port_0)
+#   trial_2: SFP, NIC rail 1 (sfp_port_0)
+#   trial_3: SC,  SC  rail 1 (sc_port_1)
+#
+# Distribution (option A):
+#   - M0 한준모: trial_3 x 600 (sole owner)
+#   - M1..M5:   trial_1 x 120 + trial_2 x 120 = 240 each (5 members x 240 = 1200)
+#   Total: 600 (trial_1) + 600 (trial_2) + 600 (trial_3) = 1800.
+#
+# Score gate: trial total < 95 -> requeued via `aic-collector` reconcile-score
+# + requeue-low-score (see docs/team-1800-round.md).
 
-version: 1
+version: 3
 team:
   base_seed: 42
   shard_stride: 100000
@@ -20,18 +33,45 @@ scene:
   sc_count_range: [1, 1]
   target_cycling: true
 tasks:
-  sfp_default_count: 1000
-  sc_default_count: 100
+  sfp_default_count: 0
+  sc_default_count: 0
+trials:
+  trial_1:
+    task_type: sfp
+    fixed_target: {rail: 0, port: sfp_port_0}
+  trial_2:
+    task_type: sfp
+    fixed_target: {rail: 1, port: sfp_port_0}
+  trial_3:
+    task_type: sc
+    fixed_target: {rail: 1, port: sc_port_1}
 members:
   - id: M0
     name: 한준모
+    assignments:
+      - {trial: trial_3, count: 600}
   - id: M1
     name: 전유진
+    assignments:
+      - {trial: trial_1, count: 120}
+      - {trial: trial_2, count: 120}
   - id: M2
     name: 이진형
+    assignments:
+      - {trial: trial_1, count: 120}
+      - {trial: trial_2, count: 120}
   - id: M3
     name: 정혜린
+    assignments:
+      - {trial: trial_1, count: 120}
+      - {trial: trial_2, count: 120}
   - id: M4
     name: 엄창용
+    assignments:
+      - {trial: trial_1, count: 120}
+      - {trial: trial_2, count: 120}
   - id: M5
     name: 이강인
+    assignments:
+      - {trial: trial_1, count: 120}
+      - {trial: trial_2, count: 120}

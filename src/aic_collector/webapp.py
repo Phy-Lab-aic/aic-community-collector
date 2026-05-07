@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +126,14 @@ HIDDEN_POLICIES = {
 WORKER_STATE_FILE = Path("/tmp/aic_worker_state.json")
 WORKER_PID_FILE = Path("/tmp/aic_worker_pid.txt")
 WORKER_LOG_FILE = Path("/tmp/aic_worker_run.log")
+
+# Batch automation uses separate status surfaces so it never collides with the
+# normal queue worker controls.
+AUTOMATION_STATE_FILE = Path("/tmp/aic_automation_worker_state.json")
+AUTOMATION_WORKER_STATE_FILE = AUTOMATION_STATE_FILE
+AUTOMATION_PID_FILE = Path("/tmp/aic_automation_pid.txt")
+AUTOMATION_STATUS_FILE = Path("/tmp/aic_automation_status.json")
+AUTOMATION_LOG_FILE = Path("/tmp/aic_automation_run.log")
 
 # Prefect 서버
 PREFECT_SERVER_URL = "http://127.0.0.1:4200"
@@ -1308,6 +1316,128 @@ def widget_default_kwargs(
     return {arg: default}
 
 
+@dataclass(frozen=True)
+class AutomationRunnerCommand:
+    """Command/env contract for the batch automation supervisor subprocess."""
+
+    command: list[str]
+    env: dict[str, str]
+    pid_file: Path
+    status_file: Path
+    log_file: Path
+    worker_state_file: Path
+
+
+def build_automation_runner_command(
+    *,
+    batch_size: int,
+    hf_repo_id: str,
+    queue_root: str | Path,
+    output_root: str | Path,
+    staging_root: str | Path = Path("/tmp/aic_automation_stage"),
+    manifest_path: str | Path = PROJECT_DIR / "configs/automation_batches/manifest.jsonl",
+    converter_path: str | Path = PROJECT_DIR / "third_party/rosbag-to-lerobot",
+    pid_file: Path = AUTOMATION_PID_FILE,
+    status_file: Path = AUTOMATION_STATUS_FILE,
+    log_file: Path = AUTOMATION_LOG_FILE,
+    worker_state_file: Path = AUTOMATION_WORKER_STATE_FILE,
+    env: Mapping[str, str] | None = None,
+) -> AutomationRunnerCommand:
+    """Build isolated automation runner command/status paths for Streamlit."""
+    command = [
+        "uv", "run", "aic-automation-batch",
+        "--batch-size", str(batch_size),
+        "--hf-repo-id", hf_repo_id,
+        "--queue-root", str(queue_root),
+        "--output-root", str(output_root),
+        "--staging-root", str(staging_root),
+        "--manifest", str(manifest_path),
+        "--converter-path", str(converter_path),
+        "--pid-file", str(pid_file),
+        "--status-file", str(status_file),
+        "--log-file", str(log_file),
+        "--worker-state-file", str(worker_state_file),
+    ]
+    runner_env = dict(os.environ if env is None else env)
+    runner_env["AIC_WORKER_STATE_FILE"] = str(worker_state_file)
+    return AutomationRunnerCommand(
+        command=command,
+        env=runner_env,
+        pid_file=pid_file,
+        status_file=status_file,
+        log_file=log_file,
+        worker_state_file=worker_state_file,
+    )
+
+
+def build_automation_command(
+    *,
+    batch_size: int,
+    hf_repo_id: str,
+    queue_root: Path,
+    output_root: Path,
+    staging_root: Path,
+    manifest_path: Path,
+    converter_path: Path,
+    repeat_count: int,
+    policy: str = "cheatcode",
+) -> list[str]:
+    """Build the Streamlit-launched automation supervisor command."""
+    return [
+        "uv",
+        "run",
+        "aic-automation-batch",
+        "--batch-size",
+        str(int(batch_size)),
+        "--hf-repo-id",
+        hf_repo_id,
+        "--queue-root",
+        str(queue_root),
+        "--output-root",
+        str(output_root),
+        "--staging-root",
+        str(staging_root),
+        "--manifest",
+        str(manifest_path),
+        "--converter-path",
+        str(converter_path),
+        "--worker-state-file",
+        str(AUTOMATION_STATE_FILE),
+        "--repeat-count",
+        str(int(repeat_count)),
+        "--policy",
+        policy,
+    ]
+
+
+def build_automation_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build automation subprocess env without storing Hugging Face tokens in UI state."""
+    env = dict(base_env or os.environ)
+    env["AIC_WORKER_STATE_FILE"] = str(AUTOMATION_STATE_FILE)
+    env["PREFECT_API_URL"] = f"{PREFECT_SERVER_URL}/api"
+    # HF_TOKEN, if present, is inherited only through the process environment.
+    # Streamlit widgets/session state never ask for or persist a token.
+    return env
+
+
+def read_automation_status() -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    if AUTOMATION_STATE_FILE.exists():
+        try:
+            state = json.loads(AUTOMATION_STATE_FILE.read_text())
+        except Exception:
+            state = {}
+    if AUTOMATION_PID_FILE.exists():
+        try:
+            pid = int(AUTOMATION_PID_FILE.read_text().strip())
+            os.kill(pid, 0)
+            state["pid"] = pid
+            state["running"] = True
+        except Exception:
+            state["running"] = False
+    return state
+
+
 def build_team_slot_summary(
     preset: TeamPreset | None,
     team_state: dict[str, Any] | None,
@@ -2208,6 +2338,14 @@ if st is not None:
                 os.kill(pid, 0)
             except OSError:
                 return None
+            proc_stat = Path(f"/proc/{pid}/stat")
+            try:
+                parts = proc_stat.read_text().split()
+                if len(parts) >= 3 and parts[2] == "Z":
+                    WORKER_PID_FILE.unlink(missing_ok=True)
+                    return None
+            except Exception:
+                pass
             state = {}
             if WORKER_STATE_FILE.exists():
                 try:
@@ -2233,6 +2371,14 @@ if st is not None:
             headless: bool,
             policy_sfp: str | None = None,
             policy_sc: str | None = None,
+            hf_repo_id: str | None = None,
+            automation_manifest: Path | None = None,
+            staging_root: Path | None = None,
+            lerobot_root: Path | None = None,
+            converter_path: Path | None = None,
+            hf_path_prefix: str | None = None,
+            upload_batch_size: int | None = None,
+            cleanup_after_upload: bool = True,
         ) -> None:
             """aic-collector-worker를 백그라운드 subprocess로 기동."""
             if _worker_status():
@@ -2263,6 +2409,21 @@ if st is not None:
                 cmd += ["--policy-sc", policy_sc]
             if recover_first:
                 cmd += ["--recover"]
+            if hf_repo_id:
+                cmd += ["--hf-repo-id", hf_repo_id]
+                if automation_manifest is not None:
+                    cmd += ["--automation-manifest", str(automation_manifest)]
+                if staging_root is not None:
+                    cmd += ["--staging-root", str(staging_root)]
+                if lerobot_root is not None:
+                    cmd += ["--lerobot-root", str(lerobot_root)]
+                if converter_path is not None:
+                    cmd += ["--converter-path", str(converter_path)]
+                if hf_path_prefix:
+                    cmd += ["--hf-path-prefix", hf_path_prefix]
+                if upload_batch_size is not None and upload_batch_size > 0:
+                    cmd += ["--upload-batch-size", str(upload_batch_size)]
+                cmd += ["--cleanup-after-upload" if cleanup_after_upload else "--no-cleanup-after-upload"]
     
             # 워커가 webapp이 띄운 영구 Prefect 서버에 연결되도록 env 주입.
             # 이게 없으면 매 flow run마다 ephemeral 임시 서버가 띄워져 UI에 안 보임.
@@ -2343,14 +2504,16 @@ if st is not None:
             processed = int(current_w.get("processed", 0))
             done_c = int(current_w.get("done", 0))
             fail_c = int(current_w.get("failed", 0))
+            upload_fail_c = int(current_w.get("upload_failed", 0) or 0)
             total_at_start = int(current_w.get("total_at_start", 0) or 0)
     
             if total_at_start > 0:
                 ratio = min(1.0, processed / total_at_start)
+                upload_suffix = f", upload_failed {upload_fail_c}" if current_w.get("upload_enabled") else ""
                 st.progress(
                     ratio,
                     text=f"처리 {processed} / {total_at_start} "
-                         f"(done {done_c}, failed {fail_c})",
+                         f"(done {done_c}, failed {fail_c}{upload_suffix})",
                 )
                 try:
                     started_iso = current_w.get("started_at")
@@ -2371,6 +2534,13 @@ if st is not None:
                             f"⏱ 평균 {per_item:.1f}s/config · 남은 "
                             f"{remaining}개 · ETA ~{eta_str}"
                         )
+                        if current_w.get("upload_enabled"):
+                            st.caption(
+                                "🤗 업로드 batch "
+                                f"{current_w.get('upload_batches_done', 0)}회 완료 · "
+                                f"대기 {current_w.get('upload_batch_pending', 0)}/"
+                                f"{current_w.get('upload_batch_size', '?')}"
+                            )
                 except Exception:
                     pass
             else:
@@ -2396,10 +2566,11 @@ if st is not None:
             if recent:
                 with st.expander(f"📋 최근 처리 {len(recent)}개", expanded=True):
                     for r in recent:
-                        icon = "✅" if r.get("result") == "done" else "❌"
+                        icon = "✅" if r.get("result") in ("done", "uploaded") else "❌"
+                        upload_stage = f" · upload={r.get('upload_stage')}" if r.get("upload_stage") else ""
                         st.write(
                             f"{icon} `{r.get('name', '?')}` · "
-                            f"{r.get('duration_sec', 0)}s"
+                            f"{r.get('duration_sec', 0)}s{upload_stage}"
                         )
     
             col_stop, col_refresh = st.columns([1, 1])
@@ -2452,9 +2623,12 @@ if st is not None:
                 )
             with col_limit:
                 exec_limit = st.number_input(
-                    "limit (0=무제한)", min_value=0, max_value=100000,
+                    "총 처리 수 / limit (episodes, 0=무제한)", min_value=0, max_value=100000,
                     value=5, step=1, key="exec_limit",
-                    help="최대 처리 config 수. 0이면 큐가 빌 때까지.",
+                    help=(
+                        "이번 워커 실행에서 처리할 총 config/episode 수입니다. "
+                        "예: 800이면 총 800개 처리."
+                    ),
                 )
     
             _policy_options = policies or ["cheatcode"]
@@ -2569,6 +2743,81 @@ if st is not None:
                     help="실행 결과(bag, scoring)가 저장되는 루트 경로. 결과 탭과 값이 공유됩니다.",
                     on_change=_exec_output_root_changed,
                 )
+
+                exec_upload_enabled = st.checkbox(
+                    "LeRobot 변환 + Hugging Face 업로드까지 워커에서 자동 수행",
+                    value=False,
+                    key="exec_lerobot_upload_enabled",
+                    help=(
+                        "ON이면 별도 자동화 프로세스가 아니라 이 워커가 각 성공 run 직후 "
+                        "검증→staging→rosbag-to-lerobot 변환→HF 업로드→remote verify를 이어서 수행합니다."
+                    ),
+                )
+                exec_hf_repo_id = ""
+                exec_upload_manifest = None
+                exec_staging_root = None
+                exec_lerobot_root = None
+                exec_converter_path = None
+                exec_hf_path_prefix = "worker"
+                exec_upload_batch_size = 1
+                exec_cleanup_after_upload = True
+                if exec_upload_enabled:
+                    exec_hf_repo_id = st.text_input(
+                        "HF dataset repo id",
+                        key="exec_hf_repo_id",
+                        placeholder="org_or_user/dataset",
+                        help="토큰은 UI에 저장하지 않습니다. HF_TOKEN 환경변수 또는 huggingface-cli login을 사용합니다.",
+                    )
+                    col_stage, col_lero = st.columns(2)
+                    with col_stage:
+                        exec_staging_root = Path(st.text_input(
+                            "LeRobot staging root",
+                            value="/tmp/aic_worker_lerobot_stage",
+                            key="exec_lerobot_staging_root",
+                        ))
+                    with col_lero:
+                        exec_lerobot_root = Path(st.text_input(
+                            "LeRobot output root",
+                            value="/tmp/aic_worker_lerobot_dataset",
+                            key="exec_lerobot_output_root",
+                        ))
+                    exec_upload_manifest = Path(st.text_input(
+                        "Upload manifest JSONL",
+                        value=str(Path(exec_output_root).expanduser() / "worker_lerobot_upload_manifest.jsonl"),
+                        key="exec_lerobot_manifest",
+                    ))
+                    exec_converter_path = Path(st.text_input(
+                        "rosbag-to-lerobot path",
+                        value=str(PROJECT_DIR / "third_party/rosbag-to-lerobot"),
+                        key="exec_lerobot_converter_path",
+                    ))
+                    exec_hf_path_prefix = st.text_input(
+                        "HF path prefix",
+                        value="worker",
+                        key="exec_hf_path_prefix",
+                    )
+                    col_batch_size, col_cleanup = st.columns(2)
+                    with col_batch_size:
+                        exec_upload_batch_size = st.number_input(
+                            "Upload batch size (episodes)",
+                            min_value=1,
+                            max_value=100000,
+                            value=min(20, int(exec_limit)) if int(exec_limit) > 0 else 20,
+                            step=1,
+                            key="exec_upload_batch_size",
+                            help=(
+                                "몇 개를 모아 한 번에 LeRobot 변환 결과를 HF에 업로드할지입니다. "
+                                "예: 총 처리 수 800 + batch size 20 = 20개씩 40회 업로드/정리."
+                            ),
+                        )
+                    with col_cleanup:
+                        exec_cleanup_after_upload = st.checkbox(
+                            "remote verify 후 raw/staging 삭제",
+                            value=True,
+                            key="exec_cleanup_after_upload",
+                            help="업로드 remote verify가 끝난 batch의 raw run_dir, staging, LeRobot 임시 폴더를 삭제합니다.",
+                        )
+                    st.caption("업로드 토큰은 `HF_TOKEN` 또는 `huggingface-cli login`에서만 읽고 UI/session에는 저장하지 않습니다.")
     
                 act_model_path = None
                 _uses_act = exec_policy in ("act", "hybrid") or (
@@ -2590,6 +2839,10 @@ if st is not None:
             if st.button("▶ 워커 시작", type="primary", key="exec_start"):
                 if not exec_queue_root.exists():
                     st.error(f"큐 루트가 존재하지 않습니다: {exec_queue_root}")
+                elif exec_upload_enabled and not exec_hf_repo_id.strip():
+                    st.error("LeRobot/HF 업로드를 켰으면 HF dataset repo id가 필요합니다.")
+                elif exec_upload_enabled and not exec_collect_episode:
+                    st.error("LeRobot 변환/업로드 자동화에는 collect_episode를 켜야 합니다.")
                 else:
                     try:
                         _worker_start(
@@ -2607,8 +2860,19 @@ if st is not None:
                             timeout=int(exec_timeout) if int(exec_timeout) > 0 else None,
                             recover_first=exec_recover,
                             headless=exec_headless,
+                            hf_repo_id=exec_hf_repo_id.strip() if exec_upload_enabled else None,
+                            automation_manifest=exec_upload_manifest if exec_upload_enabled else None,
+                            staging_root=exec_staging_root if exec_upload_enabled else None,
+                            lerobot_root=exec_lerobot_root if exec_upload_enabled else None,
+                            converter_path=exec_converter_path if exec_upload_enabled else None,
+                            hf_path_prefix=exec_hf_path_prefix if exec_upload_enabled else None,
+                            upload_batch_size=int(exec_upload_batch_size) if exec_upload_enabled else None,
+                            cleanup_after_upload=bool(exec_cleanup_after_upload) if exec_upload_enabled else True,
                         )
-                        st.success("워커 시작됨. 아래 로그에서 진행 확인.")
+                        st.success(
+                            "워커 시작됨. "
+                            + ("LeRobot/HF 업로드까지 같은 워커에서 이어서 실행됩니다." if exec_upload_enabled else "아래 로그에서 진행 확인.")
+                        )
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
@@ -2625,7 +2889,7 @@ if st is not None:
                             moved_total += _recover(exec_queue_root, tt)
                         st.success(f"{moved_total}개 복구됨")
                         st.rerun()
-    
+
         # 실시간 로그
         st.divider()
         st.markdown("### 📜 워커 로그")

@@ -177,8 +177,10 @@ def _build_tasks(trial: TrialPlan) -> dict[str, Any]:
     plug = TASK_PLUG_BY_TYPE[trial.task_type]
     if trial.task_type == "sfp":
         target_module = f"nic_card_mount_{trial.target_rail}"
+        port_name = trial.target_port_name
     else:
         target_module = f"sc_port_{trial.target_rail}"
+        port_name = "sc_port_base"
     return {
         "task_1": {
             "cable_type": "sfp_sc",
@@ -186,7 +188,7 @@ def _build_tasks(trial: TrialPlan) -> dict[str, Any]:
             "plug_type": plug["plug_type"],
             "plug_name": plug["plug_name"],
             "port_type": plug["port_type"],
-            "port_name": trial.target_port_name,
+            "port_name": port_name,
             "target_module_name": target_module,
             "time_limit": TIME_LIMIT,
         }
