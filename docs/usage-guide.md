@@ -369,6 +369,21 @@ uv run aic-collector-worker --root configs/train --recover
 
 LeRobot/HF 업로드를 켤 때는 `--collect-episode true`를 같이 사용하세요.
 HF 인증은 UI나 manifest에 저장하지 않고 `HF_TOKEN` 또는 `huggingface-cli login`을 사용합니다.
+처음 설정하는 사용자는 아래처럼 repo id와 토큰만 셸에 넣고 접근 확인 후 실행하면 됩니다.
+
+```bash
+export AIC_HF_REPO_ID=org_or_user/dataset
+export HF_TOKEN=hf_...
+
+uv run python - <<'PY'
+import os
+from huggingface_hub import HfApi
+
+repo_id = os.environ["AIC_HF_REPO_ID"]
+files = HfApi().list_repo_files(repo_id=repo_id, repo_type="dataset")
+print(f"HF 접근 확인 완료: {repo_id} ({len(files)}개 파일 확인)")
+PY
+```
 
 ### 단일 prebuilt config 실행
 

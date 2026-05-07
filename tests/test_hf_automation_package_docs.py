@@ -37,7 +37,7 @@ def test_hf_batch_runbook_documents_auth_submodule_recovery_and_cleanup_safety()
     required_fragments = [
         "HF_TOKEN",
         "huggingface-cli login",
-        "Do not paste",
+        "붙여넣지",
         "UI",
         "third_party/rosbag-to-lerobot",
         "git submodule update --init --recursive third_party/rosbag-to-lerobot",
@@ -45,7 +45,7 @@ def test_hf_batch_runbook_documents_auth_submodule_recovery_and_cleanup_safety()
         "cleanup_eligible",
         "cleanup_done",
         "uploaded",
-        "resume",
+        "재개",
     ]
     for fragment in required_fragments:
         assert fragment in runbook
@@ -54,7 +54,7 @@ def test_hf_batch_runbook_documents_auth_submodule_recovery_and_cleanup_safety()
 def test_hf_batch_runbook_forbids_ui_token_persistence_and_unverified_cleanup() -> None:
     runbook = (ROOT / "docs" / "hf-batch-automation-runbook.md").read_text(encoding="utf-8").lower()
 
-    assert "do not paste" in runbook and "token" in runbook and "ui" in runbook
-    assert "must not store" in runbook and "token" in runbook
-    assert "never delete" in runbook and "before remote_verified" in runbook
-    assert "cleanup only" in runbook and "remote_verified" in runbook
+    assert "붙여넣지" in runbook and "token" in runbook and "ui" in runbook
+    assert "저장하면 안 됩니다" in runbook and "token" in runbook
+    assert "remote_verified` 전에" in runbook and "삭제하면 안 됩니다" in runbook
+    assert "remote_verified" in runbook and "있을 때만" in runbook and "cleanup" in runbook

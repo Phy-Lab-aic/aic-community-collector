@@ -229,8 +229,28 @@ python -m aic_collector.team_preset verify-repo \
 Indices with fewer files than the threshold are listed under
 `below-min indices` in the output.
 
-Requires `huggingface_hub` installed and an authenticated token
-(`HF_TOKEN` or `huggingface-cli login`).
+`huggingface_hub` 설치와 인증된 token이 필요합니다(`HF_TOKEN` 또는
+`huggingface-cli login`). 운영자가 쉽게 설정할 수 있도록 repo id를 셸 변수
+하나에 두고, 라운드 시작 전에 접근을 확인합니다.
+
+```bash
+export AIC_HF_REPO_ID=org_or_user/dataset
+export HF_TOKEN=hf_...
+
+uv run python - <<'PY'
+import os
+from huggingface_hub import HfApi
+
+repo_id = os.environ["AIC_HF_REPO_ID"]
+files = HfApi().list_repo_files(repo_id=repo_id, repo_type="dataset")
+print(f"HF 접근 확인 완료: {repo_id} ({len(files)}개 파일 확인)")
+PY
+
+uv run python -m aic_collector.team_preset verify-repo \
+    --ledger configs/team/seed_ledger.yaml \
+    --repo-id "$AIC_HF_REPO_ID" \
+    --min-files-per-item 4
+```
 
 ### `retry-uploads` — re-issue failed pushes
 
