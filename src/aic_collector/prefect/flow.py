@@ -59,6 +59,42 @@ def _base_env() -> dict[str, str]:
     return env
 
 
+def _remove_engine_results(container: str, env: dict[str, str]) -> None:
+    """Remove stale engine output, repairing container-owned files if needed."""
+    if not ENGINE_RESULTS.exists():
+        return
+    if not ENGINE_RESULTS.is_dir():
+        ENGINE_RESULTS.unlink()
+        return
+
+    try:
+        shutil.rmtree(ENGINE_RESULTS)
+        return
+    except PermissionError:
+        uid = os.getuid()
+        gid = os.getgid()
+        ret, output = run_shell_process(
+            [
+                "docker",
+                "exec",
+                "-u",
+                "root",
+                container,
+                "chown",
+                "-R",
+                f"{uid}:{gid}",
+                str(ENGINE_RESULTS),
+            ],
+            log_path="/tmp/e2e_engine_results_cleanup.log",
+            env=env,
+        )
+        if ret != 0:
+            raise PermissionError(
+                f"Cannot remove {ENGINE_RESULTS}; docker chown failed: {output}"
+            )
+        shutil.rmtree(ENGINE_RESULTS)
+
+
 def _read_progress() -> dict:
     if PROGRESS_FILE.exists():
         try:
@@ -212,11 +248,7 @@ def restart_docker_task(container: str = "aic_eval") -> None:
         # 이전 결과 치우기
         READY_FLAG.unlink(missing_ok=True)
         DONE_FLAG.unlink(missing_ok=True)
-        if ENGINE_RESULTS.exists():
-            if ENGINE_RESULTS.is_dir():
-                shutil.rmtree(ENGINE_RESULTS)
-            else:
-                ENGINE_RESULTS.unlink()
+        _remove_engine_results(container, env)
 
         print("[engine] 컨테이너 재시작...")
         run_shell_process(

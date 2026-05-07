@@ -42,6 +42,67 @@ def test_restart_docker_removes_previous_engine_results_without_backup(
     ]
 
 
+def test_restart_docker_chowns_container_owned_engine_results_on_permission_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from aic_collector.prefect import flow as flow_mod
+
+    engine_results = tmp_path / "aic_results"
+    engine_results.mkdir()
+    (engine_results / "root_owned.txt").write_text("stale result", encoding="utf-8")
+
+    monkeypatch.setattr(flow_mod, "ENGINE_RESULTS", engine_results)
+    monkeypatch.setattr(flow_mod, "READY_FLAG", tmp_path / "aic_ready")
+    monkeypatch.setattr(flow_mod, "DONE_FLAG", tmp_path / "aic_done")
+    monkeypatch.setattr(flow_mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setenv("USER", "tester")
+    monkeypatch.setattr(flow_mod.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(flow_mod.os, "getgid", lambda: 1000)
+
+    calls: list[list[str]] = []
+    original_rmtree = flow_mod.shutil.rmtree
+    attempts = {"count": 0}
+
+    def flaky_rmtree(path: Path) -> None:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise PermissionError("container-owned file")
+        original_rmtree(path)
+
+    def fake_run_shell_process(
+        cmd: list[str],
+        *,
+        log_path: str,
+        env: dict[str, str],
+    ) -> tuple[int, str]:
+        calls.append(cmd)
+        return (0, "")
+
+    monkeypatch.setattr(flow_mod.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(flow_mod, "run_shell_process", fake_run_shell_process)
+
+    flow_mod.restart_docker_task.fn(container="aic_eval")
+
+    assert not engine_results.exists()
+    assert attempts["count"] == 2
+    assert calls == [
+        ["docker", "exec", "aic_eval", "id", "tester"],
+        [
+            "docker",
+            "exec",
+            "-u",
+            "root",
+            "aic_eval",
+            "chown",
+            "-R",
+            "1000:1000",
+            str(engine_results),
+        ],
+        ["docker", "restart", "aic_eval"],
+    ]
+
+
 def _spy_launch_engine(monkeypatch) -> list[list[str]]:
     """Capture distrobox cmd handed to run_process_background, skip sleep."""
     from aic_collector.prefect import flow as flow_mod
