@@ -51,5 +51,14 @@ def deploy_policies(project_dir: str | Path) -> int:
         print(f"[OK] {f.name} → 배포 완료")
         count += 1
 
+    aic_autocode = (
+        Path.home()
+        / "ws_aic/src/aic/aic_example_policies/aic_example_policies/ros/AutoCode.py"
+    )
+    if aic_autocode.is_file():
+        shutil.copy2(aic_autocode, dst / "AutoCode.py")
+        print(f"[OK] {aic_autocode} → 배포 완료")
+        count += 1
+
     print(f"=== {count}개 Policy 배포 완료 ===")
     return count

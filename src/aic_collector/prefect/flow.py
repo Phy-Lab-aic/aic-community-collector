@@ -388,7 +388,11 @@ def cleanup_task(
 
         graceful_cleanup(
             pids=pids,
-            patterns=["aic_model"],
+            patterns=[
+                "aic_model",
+                "aic_gz_bringup.launch.py",
+                "image_transport republish",
+            ],
             grace_sec=3.0,
             poll_interval=0.1,
         )
