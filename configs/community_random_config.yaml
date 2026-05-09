@@ -10,6 +10,10 @@
 # image_transport `republish` node (compressed) is no longer used for community collection.
 
 scoring:
+  # Keep camera topics as raw sensor_msgs/Image, but compress MCAP chunks on disk.
+  # rosbag2 generic --compression-mode is intentionally not used for MCAP.
+  storage_id: mcap
+  storage_preset_profile: zstd_fast
   topics:
     # === 기존 토픽 (sample_config.yaml 동일) ===
     - topic:

@@ -2846,8 +2846,11 @@ if st is not None:
                     )
                 with col_comp:
                     exec_use_compressed = st.checkbox(
-                        "use_compressed", value=True, key="exec_comp",
-                        help="카메라 이미지 JPEG 압축 (~3GB/run). 끄면 raw (~58GB/run).",
+                        "use_compressed", value=False, key="exec_comp",
+                        help=(
+                            "켜면 JPEG CompressedImage 토픽 사용. 끄면 raw Image 토픽을 "
+                            "유지하고 MCAP storage zstd 압축을 사용."
+                        ),
                     )
                 with col_ep:
                     exec_collect_episode = st.checkbox(
