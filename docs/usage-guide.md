@@ -439,6 +439,34 @@ Prefect 대시보드의 task별 로그가 가장 정확합니다.
 raw 이미지(`use_compressed=false`)는 run당 ~58 GB입니다. 대안:
 
 - 작업 실행 탭에서 **use_compressed** ON → ~3 GB/run
+- raw 토픽 구조를 유지해야 하면 MCAP storage compression 사용:
+
+  ```bash
+  ros2 bag record -s mcap \
+    --storage-preset-profile zstd_fast \
+    /center_camera/image /left_camera/image /right_camera/image
+  ```
+
+  더 작은 파일이 필요하면 후처리 변환에서 `zstd_small`을 사용합니다.
+
+  ```yaml
+  # convert.yaml
+  output_bags:
+    - uri: compressed
+      storage_id: mcap
+      storage_preset_profile: zstd_small
+      all: true
+  ```
+
+  ```bash
+  ros2 bag convert -i input_bag -o convert.yaml
+  ```
+
+  MCAP에서는 `--compression-mode message --compression-format zstd`보다
+  `--storage-preset-profile` 또는 `--storage-config-file`을 사용하세요. 이 방식은
+  `/center_camera/image` 같은 `sensor_msgs/Image` 토픽을 raw 그대로 보존하므로
+  rosbag-to-lerobot 변환과 리플레이 토픽 구조가 바뀌지 않습니다. 단, ROS publish
+  대역폭은 raw 그대로이고 디스크 write 양만 zstd 압축률만큼 줄어듭니다.
 - 작업 실행 탭에서 **collect_episode** OFF → bag+scoring만 저장
 - 오래된 `run_*` 디렉토리를 결과 탭의 🗑 버튼으로 정리
 

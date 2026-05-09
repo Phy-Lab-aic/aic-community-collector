@@ -627,7 +627,10 @@ def main() -> int:
         "--upload-batch-size",
         type=int,
         default=1,
-        help="LeRobot/HF 업로드 묶음 크기. 예: --limit 800 --upload-batch-size 20.",
+        help=(
+            "LeRobot/HF 배치 크기. 업로드 자동화가 켜지면 이 개수만큼 먼저 수집하고, "
+            "그 묶음을 모두 변환한 뒤 한 번에 업로드. 예: --limit 800 --upload-batch-size 20."
+        ),
     )
     parser.add_argument(
         "--cleanup-after-upload",

@@ -100,12 +100,14 @@ class CollectCheatCode(Policy):
     # =========================================================================
 
     def _init_episode(self, task: Task):
-        """에피소드 디렉토리 생성 및 버퍼 초기화."""
+        """Create the episode directory and reset per-step buffers."""
         ep_name = f"episode_{self._episode_counter:04d}"
         self._ep_dir = self._save_dir / ep_name
-        (self._ep_dir / "images" / "left").mkdir(parents=True, exist_ok=True)
-        (self._ep_dir / "images" / "center").mkdir(parents=True, exist_ok=True)
-        (self._ep_dir / "images" / "right").mkdir(parents=True, exist_ok=True)
+        self._ep_dir.mkdir(parents=True, exist_ok=True)
+        # Camera frames are recorded into the mcap as raw sensor_msgs/Image at sim rate (~20 Hz).
+        # Per-step PNG dumps used to be saved here but were the dominant cost in the policy
+        # loop (~30 ms / step) and dragged the effective rate down to ~12 Hz; the converter
+        # reads frames straight from the mcap, so the on-disk image folder is no longer needed.
 
         self._states = []
         self._actions = []
@@ -160,14 +162,13 @@ class CollectCheatCode(Policy):
                 self.get_logger().warn(f"[Collect] Could not read TF for {frame}")
 
     def _record_step(self, obs: Observation, action_pose: Pose):
-        """한 timestep의 observation과 action을 기록한다."""
-        # 카메라 이미지 저장 (PNG)
-        for cam_name, img_msg in [("left", obs.left_image), ("center", obs.center_image), ("right", obs.right_image)]:
-            img_np = np.frombuffer(img_msg.data, dtype=np.uint8).reshape(img_msg.height, img_msg.width, 3)
-            img_path = self._ep_dir / "images" / cam_name / f"{self._step:04d}.png"
-            cv2.imwrite(str(img_path), cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
+        """Record one timestep's observation and action.
 
-        # 로봇 상태 (RunACT와 동일한 26차원)
+        Camera frames are intentionally not dumped to PNG here — the mcap already holds
+        sensor_msgs/Image at sim rate, so any per-step image encoding/IO would only put the
+        loop back under 20 Hz.
+        """
+        # Robot state (26-D, identical layout to RunACT).
         tcp_pose = obs.controller_state.tcp_pose
         tcp_vel = obs.controller_state.tcp_velocity
         state = np.array([

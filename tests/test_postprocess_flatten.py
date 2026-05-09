@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import aic_collector.postprocess_run as postprocess_run
 from aic_collector.postprocess_run import process_run
 
 
@@ -34,6 +35,15 @@ def _make_engine_config(trial_keys: list[str]) -> dict:
     for k in trial_keys:
         trials[k] = {"tasks": {"task_1": {"cable_type": "sfp", "plug_type": "lc", "port_type": "sfp_port_0"}}}
     return {"trials": trials}
+
+
+def _make_engine_config_with_storage(trial_keys: list[str]) -> dict:
+    cfg = _make_engine_config(trial_keys)
+    cfg["scoring"] = {
+        "storage_id": "mcap",
+        "storage_preset_profile": "zstd_fast",
+    }
+    return cfg
 
 
 def _make_bag_dir(parent: Path, trial_num: int) -> Path:
@@ -165,6 +175,68 @@ def test_non_flatten_default_behavior(tmp_path: Path) -> None:
     assert (wrapper / "tags.json").exists()
     assert (wrapper / "scoring.yaml").exists()
     assert not (run_dir / "tags.json").exists()
+
+
+def test_postprocess_converts_bag_storage_when_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine_results = tmp_path / "aic_results"
+    engine_results.mkdir()
+    (engine_results / "scoring.yaml").write_text(
+        yaml.safe_dump(_make_scoring({"trial_1": 97}))
+    )
+    _make_bag_dir(engine_results, 1)
+
+    engine_cfg = tmp_path / "engine_config.yaml"
+    engine_cfg.write_text(
+        yaml.safe_dump(_make_engine_config_with_storage(["trial_1"]))
+    )
+    demo_dir = tmp_path / "demo"
+    demo_dir.mkdir()
+    run_dir = tmp_path / "run_20260419_120000_sfp_0000"
+
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, *, check, capture_output, text, timeout):
+        commands.append(cmd)
+        with open(cmd[-1]) as f:
+            convert_cfg = yaml.safe_load(f)
+        output_dir = Path(convert_cfg["output_bags"][0]["uri"])
+        assert convert_cfg["output_bags"][0]["storage_id"] == "mcap"
+        assert convert_cfg["output_bags"][0]["storage_preset_profile"] == "zstd_fast"
+        output_dir.mkdir()
+        (output_dir / "compressed.mcap").write_bytes(b"compressed")
+        (output_dir / "metadata.yaml").write_text(
+            "rosbag2_bagfile_information:\n  duration:\n    nanoseconds: 12345000000\n"
+        )
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(postprocess_run.shutil, "which", lambda name: "/usr/bin/ros2")
+    monkeypatch.setattr(postprocess_run.subprocess, "run", fake_run)
+
+    rc = process_run(
+        run_dir=run_dir,
+        engine_results=engine_results,
+        demo_dir=demo_dir,
+        engine_config=engine_cfg,
+        policy="cheatcode",
+        seed=42,
+        parameters={},
+        flatten=True,
+    )
+
+    assert rc == 0
+    assert commands
+    assert commands[0][:5] == ["ros2", "bag", "convert", "-i", str(run_dir / "bag")]
+    assert commands[0][5] == "-o"
+    assert (run_dir / "bag" / "compressed.mcap").read_bytes() == b"compressed"
+    assert not (run_dir / "bag" / "fake.mcap").exists()
 
 
 if __name__ == "__main__":

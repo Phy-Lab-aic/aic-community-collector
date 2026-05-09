@@ -35,7 +35,9 @@ import argparse
 import json
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +49,26 @@ except ImportError:
 
 
 TAGS_SCHEMA_VERSION = "0.1.0"
+HZ_REPORT_SCHEMA_VERSION = "0.1.0"
+
+# Default rate target — collector pipeline assumes 20 Hz sim publishing.
+DEFAULT_TARGET_HZ = 20.0
+# Topics that legitimately publish at sub-target rates (event/latched topics);
+# they are still measured but never trigger an Hz warning.
+LOW_RATE_TOPIC_PREFIXES: tuple[str, ...] = (
+    "/tf_static",
+    "/scoring/insertion_event",
+    "/aic/gazebo/contacts/off_limit",
+)
+# Topics that should be measured against the target Hz when present.
+RATE_CRITICAL_TOPIC_HINTS: tuple[str, ...] = (
+    "/joint_states",
+    "/fts_broadcaster/wrench",
+    "/aic_controller/controller_state",
+    "/_camera/image",  # matches /left_camera/image, /center_camera/image, ...
+)
+HZ_MIN_RATIO = 0.7
+SIM_WALL_MISMATCH_RATIO = 0.10  # 10% drift between bag and episode duration
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +126,101 @@ def find_bag_for_trial(engine_results: Path, trial_num: int) -> Path | None:
         if m and int(m.group(1)) == trial_num:
             return child
     return None
+
+
+def _bag_storage_config(engine_config: Path | None) -> dict[str, str]:
+    """Read collector-owned rosbag storage conversion settings from engine config."""
+    if not engine_config or not engine_config.exists():
+        return {}
+    try:
+        with open(engine_config) as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+    scoring = cfg.get("scoring") or {}
+    if not isinstance(scoring, dict):
+        return {}
+
+    out: dict[str, str] = {}
+    for key in ("storage_id", "storage_preset_profile", "storage_config_uri"):
+        value = scoring.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    return out
+
+
+def _compress_bag_storage(bag_dir: Path, storage_cfg: dict[str, str]) -> bool:
+    """Convert a moved bag directory to MCAP storage compression in-place.
+
+    The engine records the source bag. Collector postprocess owns this conversion
+    so upstream AIC scoring code can stay unchanged. If conversion fails, the
+    original bag directory is kept.
+    """
+    preset = storage_cfg.get("storage_preset_profile")
+    config_uri = storage_cfg.get("storage_config_uri")
+    if not preset and not config_uri:
+        return False
+
+    if shutil.which("ros2") is None:
+        print("[warn] ros2 CLI 없음 — bag storage compression 건너뜀")
+        return False
+
+    output_dir = bag_dir.with_name(f"{bag_dir.name}_storage_compressed")
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+
+    output_spec: dict[str, Any] = {
+        "uri": str(output_dir),
+        "storage_id": storage_cfg.get("storage_id", "mcap"),
+        "all": True,
+    }
+    if preset:
+        output_spec["storage_preset_profile"] = preset
+    if config_uri:
+        output_spec["storage_config_uri"] = config_uri
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        yaml.safe_dump({"output_bags": [output_spec]}, f, sort_keys=False)
+        convert_config = Path(f.name)
+
+    try:
+        proc = subprocess.run(
+            ["ros2", "bag", "convert", "-i", str(bag_dir), "-o", str(convert_config)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except Exception as exc:
+        print(f"[warn] bag storage compression 실패: {exc}")
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        return False
+    finally:
+        convert_config.unlink(missing_ok=True)
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or proc.stdout or "").strip()
+        print(
+            f"[warn] bag storage compression 실패(returncode={proc.returncode}): "
+            f"{stderr}"
+        )
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        return False
+
+    if not output_dir.exists() or not any(output_dir.glob("*.mcap")):
+        print("[warn] bag storage compression 결과 MCAP 없음 — 원본 유지")
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        return False
+
+    shutil.rmtree(bag_dir)
+    shutil.move(str(output_dir), str(bag_dir))
+    detail = preset or config_uri or "storage config"
+    print(f"[ok] bag storage compression 적용: {bag_dir} ({detail})")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +330,359 @@ def _config_task_info(engine_config: Path | None, trial_key: str) -> dict:
         return info
     except Exception:
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Hz / timestamp 품질 분석
+# ---------------------------------------------------------------------------
+
+
+def _is_rate_critical(topic: str) -> bool:
+    """Return True if `topic` should be measured against the target Hz."""
+    if any(topic.startswith(prefix) for prefix in LOW_RATE_TOPIC_PREFIXES):
+        return False
+    for hint in RATE_CRITICAL_TOPIC_HINTS:
+        if hint.startswith("/_") and hint.endswith("/image"):
+            # Wildcard cam pattern: anything ending in /image.
+            if topic.endswith("/image"):
+                return True
+        elif topic == hint or topic.startswith(hint + "/"):
+            return True
+    return False
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    pct = max(0.0, min(100.0, pct))
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (pct / 100.0) * (len(ordered) - 1)
+    low = int(rank)
+    high = min(low + 1, len(ordered) - 1)
+    frac = rank - low
+    return ordered[low] + (ordered[high] - ordered[low]) * frac
+
+
+def _collect_log_times(mcap_path: Path) -> dict[str, list[int]]:
+    """Walk an MCAP file and return ``{topic: [log_time_ns, ...]}``.
+
+    Decoding is intentionally skipped — we only need timestamps and topic
+    names, which are present on Channel/Message records.
+    """
+    try:
+        from mcap.stream_reader import StreamReader
+    except ImportError:
+        print("[warn] mcap 패키지 없음 — Hz 분석 건너뜀")
+        return {}
+
+    channels: dict[int, str] = {}
+    timestamps: dict[str, list[int]] = {}
+    try:
+        with open(mcap_path, "rb") as fp:
+            for record in StreamReader(fp, record_size_limit=None).records:
+                rtype = type(record).__name__
+                if rtype == "Channel":
+                    channels[record.id] = record.topic
+                elif rtype == "Message":
+                    topic = channels.get(record.channel_id)
+                    if topic is None:
+                        continue
+                    timestamps.setdefault(topic, []).append(int(record.log_time))
+    except Exception as exc:
+        print(f"[warn] Hz 분석 — MCAP 읽기 실패 ({mcap_path.name}): {exc}")
+        return {}
+    return timestamps
+
+
+def _analyze_topic(
+    topic: str,
+    log_times_ns: list[int],
+    target_hz: float,
+) -> dict[str, Any]:
+    """Compute timing statistics for a single topic."""
+    rate_critical = _is_rate_critical(topic)
+    count = len(log_times_ns)
+    if count < 2:
+        return {
+            "topic": topic,
+            "rate_critical": rate_critical,
+            "message_count": count,
+            "duration_sec": 0.0,
+            "actual_hz": 0.0,
+            "target_hz": target_hz,
+            "min_hz": target_hz * HZ_MIN_RATIO,
+            "median_gap_ms": 0.0,
+            "p95_gap_ms": 0.0,
+            "max_gap_ms": 0.0,
+            "expected_count": 0,
+            "dropped_estimate": 0,
+            "valid": not rate_critical,
+            "note": (
+                "메시지 2개 미만 — Hz 측정 불가"
+                if rate_critical
+                else "low-rate 토픽 (event/latched)"
+            ),
+        }
+
+    ordered = sorted(log_times_ns)
+    duration_ns = ordered[-1] - ordered[0]
+    duration_sec = duration_ns / 1_000_000_000.0 if duration_ns > 0 else 0.0
+    actual_hz = (count - 1) / duration_sec if duration_sec > 0 else 0.0
+
+    gaps_ms = [
+        (ordered[i + 1] - ordered[i]) / 1_000_000.0
+        for i in range(len(ordered) - 1)
+    ]
+    median_gap_ms = _percentile(gaps_ms, 50.0)
+    p95_gap_ms = _percentile(gaps_ms, 95.0)
+    max_gap_ms = max(gaps_ms) if gaps_ms else 0.0
+
+    expected_count = (
+        int(round(duration_sec * target_hz)) + 1
+        if rate_critical and duration_sec > 0
+        else 0
+    )
+    dropped_estimate = max(0, expected_count - count) if expected_count else 0
+
+    if rate_critical:
+        valid = actual_hz >= target_hz * HZ_MIN_RATIO
+    else:
+        valid = True
+
+    return {
+        "topic": topic,
+        "rate_critical": rate_critical,
+        "message_count": count,
+        "duration_sec": round(duration_sec, 3),
+        "actual_hz": round(actual_hz, 2),
+        "target_hz": target_hz,
+        "min_hz": round(target_hz * HZ_MIN_RATIO, 2),
+        "median_gap_ms": round(median_gap_ms, 2),
+        "p95_gap_ms": round(p95_gap_ms, 2),
+        "max_gap_ms": round(max_gap_ms, 2),
+        "expected_count": expected_count,
+        "dropped_estimate": dropped_estimate,
+        "valid": valid,
+    }
+
+
+def _camera_sync_stats(
+    timestamps_by_topic: dict[str, list[int]],
+    target_hz: float,
+) -> dict[str, Any] | None:
+    """Estimate inter-camera sync skew at the slowest tick rate.
+
+    Returns ``None`` when fewer than two camera topics are present.
+    """
+    cam_topics = sorted(t for t in timestamps_by_topic if t.endswith("/image"))
+    if len(cam_topics) < 2:
+        return None
+
+    primary = cam_topics[0]
+    primary_ticks = sorted(timestamps_by_topic[primary])
+    if not primary_ticks:
+        return None
+    others = {
+        t: sorted(timestamps_by_topic[t])
+        for t in cam_topics[1:]
+        if timestamps_by_topic[t]
+    }
+    if not others:
+        return None
+
+    timegap_ns = int(1_000_000_000 / target_hz) if target_hz > 0 else 0
+    tolerance_ns = timegap_ns // 2 if timegap_ns else 0
+
+    skews_ms: list[float] = []
+    out_of_tolerance = 0
+    for tick in primary_ticks:
+        worst = 0
+        for other_ticks in others.values():
+            # Closest other-camera tick by absolute time.
+            idx = _bisect_closest(other_ticks, tick)
+            if idx is None:
+                continue
+            diff = abs(other_ticks[idx] - tick)
+            worst = max(worst, diff)
+        if worst:
+            skews_ms.append(worst / 1_000_000.0)
+            if tolerance_ns and worst > tolerance_ns:
+                out_of_tolerance += 1
+
+    if not skews_ms:
+        return None
+
+    return {
+        "primary": primary,
+        "others": list(others.keys()),
+        "tolerance_ms": round(tolerance_ns / 1_000_000.0, 2) if tolerance_ns else 0.0,
+        "median_skew_ms": round(_percentile(skews_ms, 50.0), 2),
+        "p95_skew_ms": round(_percentile(skews_ms, 95.0), 2),
+        "max_skew_ms": round(max(skews_ms), 2),
+        "out_of_tolerance_frames": out_of_tolerance,
+        "total_frames": len(primary_ticks),
+    }
+
+
+def _bisect_closest(sorted_values: list[int], target: int) -> int | None:
+    if not sorted_values:
+        return None
+    import bisect
+
+    pos = bisect.bisect_left(sorted_values, target)
+    candidates = []
+    if pos < len(sorted_values):
+        candidates.append(pos)
+    if pos > 0:
+        candidates.append(pos - 1)
+    return min(candidates, key=lambda i: abs(sorted_values[i] - target))
+
+
+def _episode_wall_duration_sec(episode_meta: dict | None) -> float | None:
+    if not episode_meta:
+        return None
+    duration = episode_meta.get("duration_sec")
+    if isinstance(duration, (int, float)) and duration > 0:
+        return float(duration)
+    return None
+
+
+def compute_hz_report(
+    bag_dir: Path | None,
+    target_hz: float = DEFAULT_TARGET_HZ,
+    episode_meta: dict | None = None,
+) -> dict[str, Any] | None:
+    """Build a per-topic Hz/timestamp quality report for one trial bag.
+
+    Returns ``None`` when no MCAP file is found. The structure is JSON-
+    serialisable and is consumed by the webapp's "수집 품질" surface.
+    """
+    if not bag_dir or not bag_dir.exists():
+        return None
+    mcap_files = sorted(bag_dir.glob("*.mcap"))
+    if not mcap_files:
+        return None
+    primary_mcap = mcap_files[0]
+
+    timestamps = _collect_log_times(primary_mcap)
+    if not timestamps:
+        return None
+
+    topics: list[dict[str, Any]] = []
+    for topic in sorted(timestamps.keys()):
+        topics.append(_analyze_topic(topic, timestamps[topic], target_hz))
+
+    rate_critical_stats = [t for t in topics if t["rate_critical"]]
+    if rate_critical_stats:
+        avg_hz = sum(t["actual_hz"] for t in rate_critical_stats) / len(
+            rate_critical_stats
+        )
+        worst = min(rate_critical_stats, key=lambda t: t["actual_hz"])
+        worst_topic = worst["topic"]
+        worst_hz = worst["actual_hz"]
+        all_pass = all(t["valid"] for t in rate_critical_stats)
+        total_dropped = sum(t["dropped_estimate"] for t in rate_critical_stats)
+        total_expected = sum(t["expected_count"] for t in rate_critical_stats)
+        drop_rate = total_dropped / total_expected if total_expected else 0.0
+    else:
+        avg_hz = 0.0
+        worst_topic = ""
+        worst_hz = 0.0
+        all_pass = True
+        total_dropped = 0
+        total_expected = 0
+        drop_rate = 0.0
+
+    bag_duration_sec = _bag_duration_sec(bag_dir)
+    wall_duration_sec = _episode_wall_duration_sec(episode_meta)
+    sim_wall_drift_ratio: float | None = None
+    sim_wall_mismatch = False
+    if (
+        bag_duration_sec is not None
+        and wall_duration_sec is not None
+        and bag_duration_sec > 0
+    ):
+        sim_wall_drift_ratio = abs(wall_duration_sec - bag_duration_sec) / bag_duration_sec
+        sim_wall_mismatch = sim_wall_drift_ratio >= SIM_WALL_MISMATCH_RATIO
+
+    camera_sync = _camera_sync_stats(timestamps, target_hz)
+
+    return {
+        "schema_version": HZ_REPORT_SCHEMA_VERSION,
+        "mcap_file": primary_mcap.name,
+        "target_hz": target_hz,
+        "min_ratio": HZ_MIN_RATIO,
+        "topics": topics,
+        "summary": {
+            "avg_hz": round(avg_hz, 2),
+            "worst_topic": worst_topic,
+            "worst_hz": round(worst_hz, 2),
+            "all_pass": bool(all_pass),
+            "total_dropped_estimate": int(total_dropped),
+            "total_expected": int(total_expected),
+            "drop_rate": round(drop_rate, 4),
+        },
+        "duration_check": {
+            "bag_duration_sec": bag_duration_sec,
+            "episode_wall_duration_sec": wall_duration_sec,
+            "drift_ratio": round(sim_wall_drift_ratio, 4)
+            if sim_wall_drift_ratio is not None
+            else None,
+            "mismatch": sim_wall_mismatch,
+            "threshold_ratio": SIM_WALL_MISMATCH_RATIO,
+        },
+        "camera_sync": camera_sync,
+    }
+
+
+def hz_report_warnings(report: dict[str, Any] | None, prefix: str) -> list[str]:
+    """Render `report` into human-readable warning strings for validation.json."""
+    if not report:
+        return []
+    warnings: list[str] = []
+
+    summary = report.get("summary") or {}
+    if not summary.get("all_pass", True):
+        worst_topic = summary.get("worst_topic", "?")
+        worst_hz = summary.get("worst_hz", 0.0)
+        target = report.get("target_hz", DEFAULT_TARGET_HZ)
+        min_ratio = report.get("min_ratio", HZ_MIN_RATIO)
+        warnings.append(
+            f"{prefix}: Hz 미달 — 최저 토픽 `{worst_topic}` "
+            f"{worst_hz:.1f}Hz < {target * min_ratio:.1f}Hz"
+        )
+
+    drop_rate = float(summary.get("drop_rate", 0.0))
+    if drop_rate >= 0.05 and summary.get("total_expected", 0) > 0:
+        warnings.append(
+            f"{prefix}: 프레임 드롭률 {drop_rate * 100:.1f}% "
+            f"(예상 {summary.get('total_expected')} → 실측 "
+            f"{summary.get('total_expected', 0) - summary.get('total_dropped_estimate', 0)})"
+        )
+
+    duration = report.get("duration_check") or {}
+    if duration.get("mismatch"):
+        bag_d = duration.get("bag_duration_sec")
+        ep_d = duration.get("episode_wall_duration_sec")
+        ratio = duration.get("drift_ratio")
+        if bag_d is not None and ep_d is not None and ratio is not None:
+            warnings.append(
+                f"{prefix}: bag(sim) {bag_d:.1f}s vs episode(wall) {ep_d:.1f}s — "
+                f"{ratio * 100:.1f}% 차이 (sim_time/wall_time 혼용 가능성)"
+            )
+
+    cam_sync = report.get("camera_sync")
+    if cam_sync and cam_sync.get("out_of_tolerance_frames", 0) > 0:
+        warnings.append(
+            f"{prefix}: 카메라 동기 어긋남 — 프레임 "
+            f"{cam_sync['out_of_tolerance_frames']}/{cam_sync['total_frames']} "
+            f"가 허용오차 {cam_sync.get('tolerance_ms', 0):.1f}ms 초과 "
+            f"(p95 {cam_sync.get('p95_skew_ms', 0):.1f}ms)"
+        )
+
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +821,7 @@ def process_run(
     trial_order = load_trial_order(engine_config)
     if trial_order:
         print(f"[info] 엔진 trial 실행 순서: {trial_order}")
+    storage_cfg = _bag_storage_config(engine_config)
 
     # 2. trial별 재편
     per_trial = split_scoring(scoring)
@@ -401,6 +872,7 @@ def process_run(
                 shutil.rmtree(dst_bag)
             shutil.move(str(bag), str(dst_bag))
             print(f"[ok] {trial_key}: bag → {dst_bag}")
+            _compress_bag_storage(dst_bag, storage_cfg)
         else:
             print(f"[warn] {trial_key}: bag_trial_{trial_num}_* 없음 (엔진 bag 미기록?)")
 
@@ -444,6 +916,25 @@ def process_run(
             bag_dir=dst_bag,
             engine_config=engine_config,
         )
+
+        # 2-e. Hz / timestamp 품질 리포트 (가능하면)
+        hz_report = compute_hz_report(
+            bag_dir=dst_bag,
+            target_hz=DEFAULT_TARGET_HZ,
+            episode_meta=episode_meta,
+        )
+        if hz_report is not None:
+            with open(trial_dir / "hz_report.json", "w") as f:
+                json.dump(hz_report, f, indent=2, ensure_ascii=False)
+            tags["hz_summary"] = hz_report["summary"]
+            tags["hz_duration_check"] = hz_report["duration_check"]
+            print(
+                f"[hz] {trial_key}: avg={hz_report['summary']['avg_hz']:.1f}Hz "
+                f"worst={hz_report['summary']['worst_topic']} "
+                f"({hz_report['summary']['worst_hz']:.1f}Hz) "
+                f"drop={hz_report['summary']['drop_rate'] * 100:.1f}%"
+            )
+
         with open(trial_dir / "tags.json", "w") as f:
             json.dump(tags, f, indent=2, ensure_ascii=False)
 

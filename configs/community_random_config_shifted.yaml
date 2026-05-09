@@ -1,4 +1,6 @@
 scoring:
+  storage_id: mcap
+  storage_preset_profile: zstd_fast
   topics:
   - topic:
       name: /joint_states
