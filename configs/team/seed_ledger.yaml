@@ -69,3 +69,17 @@ entries:
   fixed_target:
     rail: 2
     port: sfp_port_0
+- member_id: M6
+  task_type: sfp
+  base_seed: 43
+  start_index: 500000
+  count: 100
+  strategy: lhs
+  queue_root: configs/train
+  preset_hash: sha256:81044ba67c8b45432ecedb245f5cd8cea671f3001bc673ba69a6b8a5661210b5
+  git_sha: 0dcd5404761d18edaf9b5120027ced360068a125
+  created_at: '2026-05-09T07:06:00Z'
+  trial_id: trial_6
+  fixed_target:
+    rail: 2
+    port: sfp_port_1
