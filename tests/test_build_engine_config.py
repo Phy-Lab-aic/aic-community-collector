@@ -28,3 +28,12 @@ def test_build_preserves_scoring_storage_options() -> None:
 
     assert cfg["scoring"]["storage_id"] == "mcap"
     assert cfg["scoring"]["storage_preset_profile"] == "zstd_fast"
+
+
+def test_low_spec_20hz_config_keeps_raw_headless_minimum() -> None:
+    cfg = yaml.safe_load((PROJECT_DIR / "configs/e2e_low_spec_20hz.yaml").read_text())
+
+    assert cfg["collection"]["collect_episode"] is False
+    assert cfg["engine"]["headless"] is True
+    assert cfg["engine"]["use_compressed"] is False
+    assert "target_hz" not in cfg["engine"]

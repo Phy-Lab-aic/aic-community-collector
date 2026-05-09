@@ -1,0 +1,47 @@
+# Low-spec 20 Hz smoke collection.
+#
+# Goal: keep the simulator publishing target at 20 Hz while reducing avoidable
+# local overhead. This intentionally does not lower the Hz quality gate.
+# Run with:
+#   uv run aic-prefect-run --config configs/e2e_low_spec_20hz.yaml
+
+schema_version: "0.1"
+
+collection:
+  runs: 1
+  trials: [1]
+  output_root: ~/aic_low_spec_20hz
+  seed: 42
+  collect_episode: false
+
+policy:
+  default: cheatcode
+
+parameters:
+  # Nearly fixed scene for hardware/load smoke testing.
+  nic0_translation: { min: -0.001, max: 0.001 }
+  nic0_yaw:         { min: -0.001, max: 0.001 }
+  nic1_translation: { min: -0.001, max: 0.001 }
+  nic1_yaw:         { min: -0.001, max: 0.001 }
+  sc0_translation:  { min: -0.001, max: 0.001 }
+  sc0_yaw:          { min: -0.001, max: 0.001 }
+  sc1_translation:  { min: -0.001, max: 0.001 }
+  sc1_yaw:          { min: -0.001, max: 0.001 }
+
+sampling:
+  strategy: uniform
+
+tags:
+  schema_version: "0.0.0"
+  auto:
+    success_from_scoring: true
+    cable_type_from_metadata: true
+
+engine:
+  ground_truth: true
+  headless: true
+  # Keep raw Image topics so rosbag-to-lerobot consumes 20 Hz MCAP frames
+  # directly. `use_compressed=true` launches image_transport republish, which
+  # adds CPU load and can reintroduce missing-camera-topic fallbacks.
+  use_compressed: false
+  template: configs/community_random_config.yaml

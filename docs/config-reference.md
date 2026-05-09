@@ -159,6 +159,7 @@ policy:
 |------|------|--------|------|
 | `ground_truth` | bool | `true` | `true`: 정확한 TF 좌표 제공 (수집용). `false`: 현실적 조건 (평가용) |
 | `use_compressed` | bool | `false` | `true`: JPEG `CompressedImage` 토픽 사용 (~3GB/run). `false`: raw `sensor_msgs/Image` 토픽 유지 (~58GB/run, MCAP storage zstd 압축을 써도 토픽 구조는 raw 유지) |
+| `headless` | bool | `false` | `true`: Gazebo/RViz GUI를 끄고 실행. 저사양 PC에서 20Hz 수집을 유지할 때 권장 |
 | `template` | path | `configs/community_random_config.yaml` | 엔진 config 템플릿 파일 |
 
 ---
@@ -168,6 +169,7 @@ policy:
 | 파일 | runs | trials | policy | sampling | 용도 |
 |------|------|--------|--------|----------|------|
 | `e2e_default.yaml` | 10 | [1,2,3] | cheatcode | lhs | 표준 수집 |
+| `e2e_low_spec_20hz.yaml` | 1 | [1] | cheatcode | uniform | 저사양 PC 20Hz smoke 수집 |
 | `e2e_test.yaml` | 1 | [1] | cheatcode | lhs | 빠른 동작 테스트 |
 | `e2e_trial2_only.yaml` | 5 | [2] | cheatcode | lhs | Trial 2 집중 수집 |
 
