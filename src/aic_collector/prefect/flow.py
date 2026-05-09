@@ -330,6 +330,32 @@ def launch_republish_task(
         return pids
 
 
+@task(name="launch-camera-bag")
+def launch_camera_bag_task(run_tag: str, run_idx: int) -> int:
+    """카메라 raw 이미지를 sim-time 기준으로 별도 bag에 녹화. PID 반환."""
+    with _task_timer("launch-camera-bag"):
+        env = _base_env()
+        bag_path = f"/tmp/e2e_camera_bag_{run_tag}_run{run_idx}"
+        topics = " ".join(
+            [f"/{cam}/image" for cam in CAMERAS]
+            + ["/joint_states", "/fts_broadcaster/wrench"]
+        )
+        log_path = f"/tmp/e2e_camera_bag_{run_tag}_run{run_idx}.log"
+        pid = run_process_background(
+            [
+                "distrobox", "enter", "aic_eval", "--", "bash", "-c",
+                f"source /ws_aic/install/setup.bash && "
+                f"export RMW_IMPLEMENTATION=rmw_zenoh_cpp && "
+                f"ros2 bag record --use-sim-time -o {bag_path} {topics}",
+            ],
+            log_path=log_path,
+            env=env,
+        )
+        print(f"[camera-bag] 녹화 시작 (pid={pid}) → {bag_path}")
+        time.sleep(2)
+        return pid
+
+
 @task(name="run-policy", timeout_seconds=900)
 def run_policy_task(
     policy_env: dict[str, str],
@@ -370,10 +396,31 @@ def run_policy_task(
         return matched
 
 
+@task(name="save-camera-bag")
+def save_camera_bag_task(run_tag: str, run_idx: int, run_dir: str) -> None:
+    """camera bag MCAP을 run_dir/bag/에 복사 (converter가 camera topics 사용하도록)."""
+    with _task_timer("save-camera-bag"):
+        bag_src = Path(f"/tmp/e2e_camera_bag_{run_tag}_run{run_idx}")
+        if not bag_src.exists():
+            print(f"[camera-bag] 소스 없음: {bag_src}")
+            return
+        mcaps = sorted(bag_src.glob("*.mcap"))
+        if not mcaps:
+            print(f"[camera-bag] MCAP 없음: {bag_src}")
+            return
+        dst_dir = Path(run_dir) / "bag"
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        for mcap in mcaps:
+            dst = dst_dir / f"camera_{mcap.name}"
+            shutil.copy2(mcap, dst)
+            print(f"[camera-bag] {mcap.name} → {dst}")
+
+
 @task(name="cleanup-run")
 def cleanup_task(
     engine_handle: dict | None,
     republish_pids: list[int],
+    camera_bag_pid: int = 0,
 ) -> None:
     """프로세스 정리 — 일괄 SIGTERM + 공용 grace 윈도우 (polling).
 
@@ -385,12 +432,15 @@ def cleanup_task(
         pids: list[int] = [p for p in republish_pids if p and p > 0]
         if engine_handle and engine_handle.get("pid", -1) > 0:
             pids.append(engine_handle["pid"])
+        if camera_bag_pid > 0:
+            pids.append(camera_bag_pid)
         graceful_cleanup(
             pids=pids,
             patterns=[
                 "aic_model",
                 "aic_gz_bringup.launch.py",
                 "image_transport republish",
+                "ros2 bag record",
             ],
             grace_sec=3.0,
             poll_interval=0.1,
@@ -994,12 +1044,14 @@ def run_prebuilt_engine_config(
     # 2. 엔진 기동
     engine_handle = None
     republish_pids: list[int] = []
+    camera_bag_pid = 0
 
     try:
         engine_handle = launch_engine_task(
             engine_cfg_path, ground_truth, run_tag, run_idx, headless=headless
         )
         republish_pids = launch_republish_task(use_compressed, run_tag, run_idx)
+        camera_bag_pid = launch_camera_bag_task(run_tag, run_idx)
         policy_env = build_policy_env(policy_default, per_trial, act_model_path)
         policy_timeout = trials_count * 200 + 60
         run_policy_task(
@@ -1007,13 +1059,14 @@ def run_prebuilt_engine_config(
             policy_timeout=policy_timeout, collect_episode=collect_episode,
         )
     finally:
-        cleanup_task(engine_handle, republish_pids)
+        cleanup_task(engine_handle, republish_pids, camera_bag_pid)
 
     # 3. 후처리 — sample/seed는 큐 consumer에는 없으므로 0/빈값.
     # flatten=True로 trial 래퍼 없이 run_dir 바로 아래에 bag/episode/tags.json 배치.
     result = postprocess_task(
         run_dir, demo_dir, engine_cfg_path, policy_default, 0, {}, flatten=True
     )
+    save_camera_bag_task(run_tag, run_idx, run_dir)
 
     validation = None
     if result.get("success"):
