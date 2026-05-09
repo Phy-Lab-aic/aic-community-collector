@@ -13,3 +13,17 @@ entries:
   fixed_target:
     rail: 1
     port: sc_port_1
+- member_id: M11
+  task_type: sc
+  base_seed: 43
+  start_index: 1000000
+  count: 150
+  strategy: lhs
+  queue_root: /home/weed/ws_aic/src/aic-community-collector/configs/train
+  preset_hash: sha256:81044ba67c8b45432ecedb245f5cd8cea671f3001bc673ba69a6b8a5661210b5
+  git_sha: 806d3d63efc09acdf115928fb369ceec14837b7a
+  created_at: '2026-05-09T07:22:28Z'
+  trial_id: trial_11
+  fixed_target:
+    rail: 0
+    port: sc_port_0
