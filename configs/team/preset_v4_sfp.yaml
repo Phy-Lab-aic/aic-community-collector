@@ -19,16 +19,22 @@
 #   trial_9  : NIC rail 4, sfp_port_0
 #   trial_10 : NIC rail 4, sfp_port_1
 #
-# Distribution (1500 ep total, 150 per scope, 300 per member):
-#   - M1 전유진: trial_1  + trial_2     (rail 0; 150 + 150 = 300)
-#   - M2 이진형: trial_3  + trial_4     (rail 1; 150 + 150 = 300)
-#   - M3 정혜린: trial_5  + trial_6     (rail 2; 150 + 150 = 300)
-#   - M4 엄창용: trial_7  + trial_8     (rail 3; 150 + 150 = 300)
-#   - M5 이강인: trial_9  + trial_10    (rail 4; 150 + 150 = 300)
+# Distribution (1500 ep total, 150 per scope, 1 trial per member ID):
+#   - M1  전유진 → trial_1  (rail 0 / sfp_port_0)  × 150
+#   - M2  전유진 → trial_2  (rail 0 / sfp_port_1)  × 150
+#   - M3  이진형 → trial_3  (rail 1 / sfp_port_0)  × 150
+#   - M4  이진형 → trial_4  (rail 1 / sfp_port_1)  × 150
+#   - M5  정혜린 → trial_5  (rail 2 / sfp_port_0)  × 150
+#   - M6  정혜린 → trial_6  (rail 2 / sfp_port_1)  × 150
+#   - M7  엄창용 → trial_7  (rail 3 / sfp_port_0)  × 150
+#   - M8  엄창용 → trial_8  (rail 3 / sfp_port_1)  × 150
+#   - M9  이강인 → trial_9  (rail 4 / sfp_port_0)  × 150
+#   - M10 이강인 → trial_10 (rail 4 / sfp_port_1)  × 150
 #
-# Why one rail per member: keeps the collector machine on a fixed scene
-# layout for the whole shift (only the port flips between trials), which
-# cuts USD reload time and lets each member tune to one rail's quirks.
+# Why one ID per trial: the team UI lists 10 selectable rows so an operator
+# picks the exact scope they're starting. Same physical person owns two
+# consecutive IDs (e.g. 전유진 = M1 + M2) so they stay on a fixed scene
+# layout for their whole shift (only the port flips between IDs).
 #
 # Score gate stays at 94 (see docs/team-1800-round.md).
 
@@ -87,26 +93,31 @@ trials:
 members:
   - id: M1
     name: 전유진
-    assignments:
-      - {trial: trial_1, count: 150}
-      - {trial: trial_2, count: 150}
+    assignment: {trial: trial_1, count: 150}
   - id: M2
-    name: 이진형
-    assignments:
-      - {trial: trial_3, count: 150}
-      - {trial: trial_4, count: 150}
+    name: 전유진
+    assignment: {trial: trial_2, count: 150}
   - id: M3
-    name: 정혜린
-    assignments:
-      - {trial: trial_5, count: 150}
-      - {trial: trial_6, count: 150}
+    name: 이진형
+    assignment: {trial: trial_3, count: 150}
   - id: M4
-    name: 엄창용
-    assignments:
-      - {trial: trial_7, count: 150}
-      - {trial: trial_8, count: 150}
+    name: 이진형
+    assignment: {trial: trial_4, count: 150}
   - id: M5
+    name: 정혜린
+    assignment: {trial: trial_5, count: 150}
+  - id: M6
+    name: 정혜린
+    assignment: {trial: trial_6, count: 150}
+  - id: M7
+    name: 엄창용
+    assignment: {trial: trial_7, count: 150}
+  - id: M8
+    name: 엄창용
+    assignment: {trial: trial_8, count: 150}
+  - id: M9
     name: 이강인
-    assignments:
-      - {trial: trial_9, count: 150}
-      - {trial: trial_10, count: 150}
+    assignment: {trial: trial_9, count: 150}
+  - id: M10
+    name: 이강인
+    assignment: {trial: trial_10, count: 150}

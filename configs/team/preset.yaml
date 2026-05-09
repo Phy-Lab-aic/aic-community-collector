@@ -19,19 +19,27 @@
 #   trial_11 : SC,  SC  rail 0, sc_port_0
 #   trial_12 : SC,  SC  rail 1, sc_port_1
 #
-# Distribution (1800 ep total, 150 per scope, 300 per member):
-#   - M0 한준모: trial_11 + trial_12          (SC owner; 150 + 150 = 300)
-#   - M1 전유진: trial_1  + trial_2           (SFP rail 0; 150 + 150 = 300)
-#   - M2 이진형: trial_3  + trial_4           (SFP rail 1; 150 + 150 = 300)
-#   - M3 정혜린: trial_5  + trial_6           (SFP rail 2; 150 + 150 = 300)
-#   - M4 엄창용: trial_7  + trial_8           (SFP rail 3; 150 + 150 = 300)
-#   - M5 이강인: trial_9  + trial_10          (SFP rail 4; 150 + 150 = 300)
+# Distribution (1800 ep total, 150 per scope, 1 trial per member ID):
+#   - M1  전유진 → trial_1  (SFP rail 0 / sfp_port_0)  × 150
+#   - M2  전유진 → trial_2  (SFP rail 0 / sfp_port_1)  × 150
+#   - M3  이진형 → trial_3  (SFP rail 1 / sfp_port_0)  × 150
+#   - M4  이진형 → trial_4  (SFP rail 1 / sfp_port_1)  × 150
+#   - M5  정혜린 → trial_5  (SFP rail 2 / sfp_port_0)  × 150
+#   - M6  정혜린 → trial_6  (SFP rail 2 / sfp_port_1)  × 150
+#   - M7  엄창용 → trial_7  (SFP rail 3 / sfp_port_0)  × 150
+#   - M8  엄창용 → trial_8  (SFP rail 3 / sfp_port_1)  × 150
+#   - M9  이강인 → trial_9  (SFP rail 4 / sfp_port_0)  × 150
+#   - M10 이강인 → trial_10 (SFP rail 4 / sfp_port_1)  × 150
+#   - M11 한준모 → trial_11 (SC  rail 0 / sc_port_0)   × 150
+#   - M12 한준모 → trial_12 (SC  rail 1 / sc_port_1)   × 150
 #
-# Each member stays on a fixed scene layout for their whole shift (only the
-# port flips between trials), so USD reload time stays low and per-rail
-# quirks stay contained to one operator. M0 owns both SC rails because SC
-# is the smaller half (300 ep) and dedicating one machine to it avoids
-# loading SC alongside SFP scenes on a multi-task collector.
+# One member ID per trial means the team UI lists 12 selectable rows so an
+# operator picks the exact scope they're starting (rail × port). The same
+# physical person owns two consecutive IDs (e.g. 전유진 = M1 + M2) so they
+# stay on a fixed scene layout for their whole shift (only the port flips
+# between IDs), keeping USD reload time low. 한준모 still owns both SC
+# rails (M11 + M12) — SC is the smaller half so dedicating one machine
+# avoids loading SC alongside SFP scenes on a multi-task collector.
 #
 # Score gate stays at 94 (see docs/team-1800-round.md). The split-by-task
 # variants (`preset_v4_sfp.yaml`, `preset_v4_sc.yaml`) remain available for
@@ -97,33 +105,39 @@ trials:
     task_type: sc
     fixed_target: {rail: 1, port: sc_port_1}
 members:
-  - id: M0
-    name: 한준모
-    assignments:
-      - {trial: trial_11, count: 150}
-      - {trial: trial_12, count: 150}
   - id: M1
     name: 전유진
-    assignments:
-      - {trial: trial_1, count: 150}
-      - {trial: trial_2, count: 150}
+    assignment: {trial: trial_1, count: 150}
   - id: M2
-    name: 이진형
-    assignments:
-      - {trial: trial_3, count: 150}
-      - {trial: trial_4, count: 150}
+    name: 전유진
+    assignment: {trial: trial_2, count: 150}
   - id: M3
-    name: 정혜린
-    assignments:
-      - {trial: trial_5, count: 150}
-      - {trial: trial_6, count: 150}
+    name: 이진형
+    assignment: {trial: trial_3, count: 150}
   - id: M4
-    name: 엄창용
-    assignments:
-      - {trial: trial_7, count: 150}
-      - {trial: trial_8, count: 150}
+    name: 이진형
+    assignment: {trial: trial_4, count: 150}
   - id: M5
+    name: 정혜린
+    assignment: {trial: trial_5, count: 150}
+  - id: M6
+    name: 정혜린
+    assignment: {trial: trial_6, count: 150}
+  - id: M7
+    name: 엄창용
+    assignment: {trial: trial_7, count: 150}
+  - id: M8
+    name: 엄창용
+    assignment: {trial: trial_8, count: 150}
+  - id: M9
     name: 이강인
-    assignments:
-      - {trial: trial_9, count: 150}
-      - {trial: trial_10, count: 150}
+    assignment: {trial: trial_9, count: 150}
+  - id: M10
+    name: 이강인
+    assignment: {trial: trial_10, count: 150}
+  - id: M11
+    name: 한준모
+    assignment: {trial: trial_11, count: 150}
+  - id: M12
+    name: 한준모
+    assignment: {trial: trial_12, count: 150}
