@@ -13,3 +13,6 @@ configs/train/
 .agents
 .omc/
 configs/team/*.lock
+
+# personal notes
+docs/mine.md
