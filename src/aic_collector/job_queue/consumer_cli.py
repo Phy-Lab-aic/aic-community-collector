@@ -71,6 +71,17 @@ class PreparedLerobotItem:
 
 
 @dataclass(frozen=True)
+class PreparedLerobotBatch:
+    """A collected batch converted as one LeRobot dataset."""
+
+    item_ids: list[str]
+    run_dirs: list[Path]
+    staged_paths: list[Path]
+    batch_staging_path: Path
+    lerobot_path: Path
+
+
+@dataclass(frozen=True)
 class CollectedRun:
     """A worker run that finished collection and is awaiting batch conversion."""
 
@@ -294,6 +305,171 @@ def prepare_lerobot_upload_item(
     ), {"ok": True, "stage": "converted"}
 
 
+def prepare_lerobot_upload_batch(
+    *,
+    config: LerobotUploadConfig,
+    runs: list[CollectedRun],
+    output_root: str,
+    collect_episode: bool,
+    batch_index: int,
+) -> tuple[PreparedLerobotBatch | None, dict[str, Any]]:
+    """Validate/stage a collected group and convert it once as one LeRobot dataset."""
+    if not runs:
+        return None, {"ok": True, "stage": "empty"}
+
+    from aic_collector.automation.manifest import append_event
+    from aic_collector.automation.batch_runner import (
+        folder_inventory,
+        link_or_copy,
+        run_converter,
+        stage_run_artifacts,
+        validate_run_artifacts,
+    )
+
+    batch_name = f"batch_{batch_index:04d}"
+    batch_staging_path = config.staging_root / "batches" / config.batch_id / batch_name
+    batch_lerobot_path = config.lerobot_root / "upload_batches" / config.batch_id / batch_name
+    if batch_staging_path.exists():
+        shutil.rmtree(batch_staging_path)
+    if batch_lerobot_path.exists():
+        shutil.rmtree(batch_lerobot_path)
+    batch_staging_path.mkdir(parents=True, exist_ok=True)
+
+    item_ids: list[str] = []
+    run_dirs: list[Path] = []
+    staged_paths: list[Path] = []
+
+    for run in runs:
+        item_id = _item_id_from_claim(run.claim)
+        run_dir = Path(output_root).expanduser() / f"run_{run.run_tag}"
+        record_worker_manifest_start(config, run.claim)
+        append_event(
+            config.manifest_path,
+            item_id=item_id,
+            state="worker_finished",
+            batch_id=config.batch_id,
+            queue_path=str(run.done_path),
+            run_dir=str(run_dir),
+        )
+        append_event(
+            config.manifest_path,
+            item_id=item_id,
+            state="reconciled",
+            batch_id=config.batch_id,
+            queue_path=str(run.done_path),
+            run_dir=str(run_dir),
+        )
+
+        validation = validate_run_artifacts(run_dir, collect_episode=collect_episode)
+        if not validation.get("ok"):
+            append_event(
+                config.manifest_path,
+                item_id=item_id,
+                state="validation_failed",
+                batch_id=config.batch_id,
+                run_dir=str(run_dir),
+                validation=validation,
+            )
+            return None, {"ok": False, "stage": "validation", "item_id": item_id, "validation": validation}
+        append_event(
+            config.manifest_path,
+            item_id=item_id,
+            state="collected_validated",
+            batch_id=config.batch_id,
+            run_dir=str(run_dir),
+            validation=validation,
+        )
+
+        try:
+            staged_path = stage_run_artifacts(
+                run_dir=run_dir,
+                staging_root=config.staging_root / "items",
+                item_id=item_id,
+            )
+            source_converter_run = staged_path / item_id
+            target_converter_run = batch_staging_path / item_id
+            if target_converter_run.exists():
+                shutil.rmtree(target_converter_run)
+            shutil.copytree(source_converter_run, target_converter_run, copy_function=link_or_copy)
+        except Exception as exc:
+            append_event(
+                config.manifest_path,
+                item_id=item_id,
+                state="stage_failed",
+                batch_id=config.batch_id,
+                run_dir=str(run_dir),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None, {"ok": False, "stage": "stage", "item_id": item_id, "error": str(exc)}
+        append_event(
+            config.manifest_path,
+            item_id=item_id,
+            state="staged",
+            batch_id=config.batch_id,
+            staged_path=str(staged_path),
+            batch_staging_path=str(batch_staging_path),
+            inventory=folder_inventory(staged_path),
+        )
+        item_ids.append(item_id)
+        run_dirs.append(run_dir)
+        staged_paths.append(staged_path)
+
+    try:
+        rc = run_converter(
+            converter_path=config.converter_path,
+            input_path=batch_staging_path,
+            output_path=batch_lerobot_path,
+        )
+    except Exception as exc:
+        for item_id in item_ids:
+            append_event(
+                config.manifest_path,
+                item_id=item_id,
+                state="convert_failed",
+                batch_id=config.batch_id,
+                batch_staging_path=str(batch_staging_path),
+                lerobot_path=str(batch_lerobot_path),
+                converter_path=str(config.converter_path),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return None, {"ok": False, "stage": "convert", "error": f"{type(exc).__name__}: {exc}"}
+    if rc != 0:
+        for item_id in item_ids:
+            append_event(
+                config.manifest_path,
+                item_id=item_id,
+                state="convert_failed",
+                batch_id=config.batch_id,
+                batch_staging_path=str(batch_staging_path),
+                lerobot_path=str(batch_lerobot_path),
+                converter_path=str(config.converter_path),
+                return_code=rc,
+            )
+        return None, {"ok": False, "stage": "convert", "return_code": rc}
+
+    inventory = folder_inventory(batch_lerobot_path)
+    batch_item_id = f"{config.batch_id}_{batch_name}"
+    for item_id in item_ids:
+        append_event(
+            config.manifest_path,
+            item_id=item_id,
+            state="converted",
+            batch_id=config.batch_id,
+            batch_item_id=batch_item_id,
+            batch_staging_path=str(batch_staging_path),
+            lerobot_path=str(batch_lerobot_path),
+            inventory=inventory,
+        )
+
+    return PreparedLerobotBatch(
+        item_ids=item_ids,
+        run_dirs=run_dirs,
+        staged_paths=staged_paths,
+        batch_staging_path=batch_staging_path,
+        lerobot_path=batch_lerobot_path,
+    ), {"ok": True, "stage": "converted", "batch_item_id": batch_item_id}
+
+
 def upload_lerobot_batch(
     *,
     config: LerobotUploadConfig,
@@ -387,6 +563,87 @@ def upload_lerobot_batch(
         "stage": "remote_verified",
         "batch_item_id": batch_item_id,
         "batch_size": len(items),
+        "deleted_paths": deleted,
+        "remote": remote,
+    }
+
+
+def upload_converted_lerobot_batch(
+    *,
+    config: LerobotUploadConfig,
+    batch: PreparedLerobotBatch,
+    batch_index: int,
+) -> dict[str, Any]:
+    """Upload one already-converted LeRobot dataset batch."""
+    from aic_collector.automation.manifest import append_event
+    from aic_collector.automation.batch_runner import (
+        cleanup_verified_paths,
+        record_upload_and_verify,
+    )
+
+    batch_name = f"batch_{batch_index:04d}"
+    batch_item_id = f"{config.batch_id}_{batch_name}"
+    path_in_repo = _path_in_repo(config.path_prefix, f"{config.batch_id}/{batch_name}")
+    cleanup_paths = [str(batch.lerobot_path)]
+    if config.cleanup_after_upload:
+        cleanup_paths.extend([str(path) for path in batch.run_dirs])
+        cleanup_paths.extend([str(path) for path in batch.staged_paths])
+        cleanup_paths.append(str(batch.batch_staging_path))
+
+    try:
+        remote = record_upload_and_verify(
+            manifest_path=config.manifest_path,
+            item_id=batch_item_id,
+            batch_id=config.batch_id,
+            local_folder=batch.lerobot_path,
+            repo_id=config.hf_repo_id,
+            path_in_repo=path_in_repo,
+            cleanup_paths=cleanup_paths,
+        )
+    except Exception as exc:
+        _append_failure_event(
+            config.manifest_path,
+            item_id=batch_item_id,
+            state="upload_failed",
+            batch_id=config.batch_id,
+            batch_items=batch.item_ids,
+            batch_folder=str(batch.lerobot_path),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return {"ok": False, "stage": "upload", "error": str(exc)}
+
+    if not remote.get("ok"):
+        return {"ok": False, "stage": "remote_verify_failed", "remote": remote}
+
+    for item_id in batch.item_ids:
+        append_event(
+            config.manifest_path,
+            item_id=item_id,
+            state="uploaded",
+            batch_id=config.batch_id,
+            upload={
+                "repo_id": config.hf_repo_id,
+                "repo_type": "dataset",
+                "path_in_repo": path_in_repo,
+                "method": "upload_folder_batch_dataset_member",
+                "batch_item_id": batch_item_id,
+            },
+        )
+        append_event(
+            config.manifest_path,
+            item_id=item_id,
+            state="remote_verified",
+            batch_id=config.batch_id,
+            remote={**remote, "path_in_repo": path_in_repo, "batch_item_id": batch_item_id},
+            cleanup_paths=[],
+        )
+
+    deleted = cleanup_verified_paths(config.manifest_path) if config.cleanup_after_upload else []
+    return {
+        "ok": True,
+        "stage": "remote_verified",
+        "batch_item_id": batch_item_id,
+        "batch_size": len(batch.item_ids),
         "deleted_paths": deleted,
         "remote": remote,
     }
@@ -750,6 +1007,7 @@ def main() -> int:
         return result
 
     pending_collected_runs: list[CollectedRun] = []
+    pending_upload_batches: list[PreparedLerobotBatch] = []
     current_phase: str = "idle"
 
     def _snapshot(
@@ -769,6 +1027,7 @@ def main() -> int:
             "upload_enabled": upload_config is not None,
             "upload_batch_size": args.upload_batch_size if upload_config is not None else None,
             "upload_batch_pending": len(pending_upload_items),
+            "converted_batch_pending": len(pending_upload_batches),
             "collect_batch_pending": len(pending_collected_runs),
             "upload_batches_done": upload_batches_done,
             "current": current,
@@ -876,49 +1135,48 @@ def main() -> int:
         return "failed"
 
     def _convert_collected_batch() -> None:
-        """Phase 2: convert every CollectedRun gathered in phase 1 into a PreparedLerobotItem."""
-        nonlocal current_phase, upload_fail_count
+        """Phase 2: convert the collected group once into one LeRobot dataset."""
+        nonlocal current_phase, upload_fail_count, upload_batch_index
         if upload_config is None or not pending_collected_runs:
             return
 
         current_phase = "converting"
         runs_to_convert = list(pending_collected_runs)
         pending_collected_runs.clear()
-        for run in runs_to_convert:
-            _write_state(_snapshot(
-                status="running",
-                current=run.claim.name,
-                current_path=str(run.claim.running_path),
-                current_started_at=run.collect_started_at,
-            ), state_file=state_file)
-            prepared_item, upload_result = prepare_lerobot_upload_item(
-                config=upload_config,
-                claim=run.claim,
-                done_path=run.done_path,
-                output_root=args.output_root,
-                run_tag=run.run_tag,
-                collect_episode=args.collect_episode,
+        _write_state(_snapshot(
+            status="running",
+            current=f"batch_{upload_batch_index + 1:04d}",
+        ), state_file=state_file)
+        prepared_batch, upload_result = prepare_lerobot_upload_batch(
+            config=upload_config,
+            runs=runs_to_convert,
+            output_root=args.output_root,
+            collect_episode=args.collect_episode,
+            batch_index=upload_batch_index + 1,
+        )
+        if prepared_batch is not None:
+            pending_upload_batches.append(prepared_batch)
+            print(
+                f"[upload-pending] batch {upload_batch_index + 1} converted "
+                f"({len(prepared_batch.item_ids)}개)"
             )
-            if prepared_item is not None:
-                pending_upload_items.append(prepared_item)
-                print(
-                    f"[upload-pending] {run.claim.name} converted "
-                    f"({len(pending_upload_items)}/{args.upload_batch_size})"
-                )
-            else:
-                upload_fail_count += 1
-                print(
-                    f"[upload-fail] {run.claim.name} "
-                    f"stage={(upload_result or {}).get('stage')}"
-                )
-                recent.insert(0, {
-                    "name": run.claim.name,
-                    "result": "convert_failed",
-                    "duration_sec": 0,
-                    "finished_at": datetime.now().isoformat(timespec="seconds"),
-                    "upload_stage": (upload_result or {}).get("stage"),
-                })
-                del recent[5:]
+            return
+
+        failed_count = len(runs_to_convert)
+        upload_fail_count += failed_count
+        failed_name = (upload_result or {}).get("item_id") or f"batch_{upload_batch_index + 1:04d}"
+        print(
+            f"[upload-fail] {failed_name} "
+            f"stage={(upload_result or {}).get('stage')}"
+        )
+        recent.insert(0, {
+            "name": failed_name,
+            "result": "convert_failed",
+            "duration_sec": 0,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "upload_stage": (upload_result or {}).get("stage"),
+        })
+        del recent[5:]
 
     def _record_batch_recent_entry(result: dict[str, Any]) -> None:
         recent.insert(0, {
@@ -954,15 +1212,37 @@ def main() -> int:
 
             _convert_collected_batch()
 
-            if upload_config is not None and pending_upload_items:
+            if upload_config is not None and (pending_upload_batches or pending_upload_items):
                 current_phase = "uploading"
                 _write_state(_snapshot(
                     status="running",
                     current=f"batch_{upload_batch_index + 1:04d}",
                 ), state_file=state_file)
-                batch_result = _flush_upload_batch()
-                if batch_result is not None:
+                for prepared_batch in list(pending_upload_batches):
+                    upload_batch_index += 1
+                    pending_upload_batches.remove(prepared_batch)
+                    batch_result = upload_converted_lerobot_batch(
+                        config=upload_config,
+                        batch=prepared_batch,
+                        batch_index=upload_batch_index,
+                    )
+                    if batch_result.get("ok"):
+                        upload_batches_done += 1
+                        print(
+                            f"[upload] batch {upload_batch_index} "
+                            f"({len(prepared_batch.item_ids)}개) → remote_verified"
+                        )
+                    else:
+                        upload_fail_count += len(prepared_batch.item_ids)
+                        print(
+                            f"[upload-fail] batch {upload_batch_index} "
+                            f"({len(prepared_batch.item_ids)}개) stage={batch_result.get('stage')}"
+                        )
                     _record_batch_recent_entry(batch_result)
+                if pending_upload_items:
+                    batch_result = _flush_upload_batch()
+                    if batch_result is not None:
+                        _record_batch_recent_entry(batch_result)
 
             current_phase = "idle"
 

@@ -295,6 +295,78 @@ def test_lerobot_upload_conversion_error_is_item_failure_not_worker_crash(tmp_pa
     assert materialize(manifest)["config_sfp_0002"]["state"] == "convert_failed"
 
 
+def test_prepare_lerobot_upload_batch_runs_converter_once_for_all_items(monkeypatch, tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.jsonl"
+    output_root = tmp_path / "out"
+    runs: list[consumer_cli.CollectedRun] = []
+    for index in (1, 2):
+        run_tag = f"20260505_120000_sfp_{index:04d}"
+        run_dir = output_root / f"run_{run_tag}"
+        (run_dir / "bag").mkdir(parents=True)
+        (run_dir / "bag/data.mcap").write_bytes(b"mcap")
+        (run_dir / "tags.json").write_text("{}")
+        (run_dir / "episode").mkdir()
+        (run_dir / "validation.json").write_text('{"success": true}')
+        claim = ClaimedConfig(
+            task_type="sfp",
+            sample_index=index,
+            running_path=tmp_path / f"queue/sfp/running/config_sfp_{index:04d}.yaml",
+        )
+        runs.append(
+            consumer_cli.CollectedRun(
+                claim=claim,
+                done_path=tmp_path / f"queue/sfp/done/config_sfp_{index:04d}.yaml",
+                run_tag=run_tag,
+                collect_started_at="2026-05-05T12:00:00",
+                collect_duration_sec=1,
+            )
+        )
+
+    converter_path = tmp_path / "converter"
+    _make_fake_converter(converter_path)
+    cfg = consumer_cli.LerobotUploadConfig(
+        hf_repo_id="org/repo",
+        manifest_path=manifest,
+        staging_root=tmp_path / "stage",
+        lerobot_root=tmp_path / "lerobot",
+        converter_path=converter_path,
+        path_prefix="worker",
+        batch_id="batch-1",
+    )
+    calls: list[tuple[Path, Path]] = []
+
+    def fake_converter(*, converter_path, input_path, output_path, config_path=None):
+        calls.append((input_path, output_path))
+        output_path.mkdir(parents=True)
+        (output_path / "meta.json").write_text("{}")
+        return 0
+
+    monkeypatch.setattr("aic_collector.automation.batch_runner.run_converter", fake_converter)
+
+    batch, result = consumer_cli.prepare_lerobot_upload_batch(
+        config=cfg,
+        runs=runs,
+        output_root=str(output_root),
+        collect_episode=True,
+        batch_index=1,
+    )
+
+    assert result["ok"] is True
+    assert batch is not None
+    assert batch.item_ids == ["config_sfp_0001", "config_sfp_0002"]
+    assert len(calls) == 1
+    input_path, output_path = calls[0]
+    assert sorted(path.name for path in input_path.iterdir()) == ["config_sfp_0001", "config_sfp_0002"]
+    assert all((input_path / item_id / "data.mcap").exists() for item_id in batch.item_ids)
+    assert output_path == tmp_path / "lerobot/upload_batches/batch-1/batch_0001"
+    states_by_item = {
+        item_id: [event["state"] for event in read_events(manifest) if event["item_id"] == item_id]
+        for item_id in batch.item_ids
+    }
+    assert states_by_item["config_sfp_0001"][-1] == "converted"
+    assert states_by_item["config_sfp_0002"][-1] == "converted"
+
+
 def test_recover_converted_upload_items_restores_pending_batch_after_restart(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.jsonl"
     run_dir = tmp_path / "out/run_20260505_120000_sfp_0003"
@@ -450,27 +522,29 @@ def _make_fake_converter(converter_path: Path) -> None:
 
 
 def _patch_main_loop_phases(monkeypatch, *, call_log: list[tuple[str, str]]) -> None:
-    """Patch run_one / prepare / upload_lerobot_batch to record phase ordering."""
+    """Patch run_one / batch prepare / upload to record phase ordering."""
 
     def fake_run_one(running_path, **kwargs):
         call_log.append(("collect", Path(running_path).name))
         return 0
 
-    def fake_prepare(*, config, claim, done_path, output_root, run_tag, collect_episode):
-        call_log.append(("convert", claim.name))
-        item_id = claim.name.removesuffix(".yaml")
-        item = consumer_cli.PreparedLerobotItem(
-            item_id=item_id,
-            run_dir=Path(output_root) / f"run_{run_tag}",
-            staged_path=config.staging_root / item_id,
-            lerobot_path=config.lerobot_root / "items" / item_id,
+    def fake_prepare_batch(*, config, runs, output_root, collect_episode, batch_index):
+        item_ids = [run.claim.name.removesuffix(".yaml") for run in runs]
+        call_log.append(("convert", ",".join(item_ids)))
+        batch = consumer_cli.PreparedLerobotBatch(
+            item_ids=item_ids,
+            run_dirs=[Path(output_root) / f"run_{run.run_tag}" for run in runs],
+            staged_paths=[config.staging_root / item_id for item_id in item_ids],
+            batch_staging_path=config.staging_root / "batches" / f"batch_{batch_index:04d}",
+            lerobot_path=config.lerobot_root / "upload_batches" / f"batch_{batch_index:04d}",
         )
-        return item, {"ok": True, "stage": "converted"}
+        return batch, {"ok": True, "stage": "converted", "batch_item_id": f"batch_{batch_index:04d}"}
 
-    def fake_upload_batch(*, config, items, batch_index):
+    def fake_upload_batch(*, config, batch=None, items=None, batch_index):
+        item_ids = batch.item_ids if batch is not None else [item.item_id for item in items]
         call_log.append((
             "upload",
-            f"batch_{batch_index:04d}:{','.join(item.item_id for item in items)}",
+            f"batch_{batch_index:04d}:{','.join(item_ids)}",
         ))
         return {
             "ok": True,
@@ -479,7 +553,8 @@ def _patch_main_loop_phases(monkeypatch, *, call_log: list[tuple[str, str]]) -> 
         }
 
     monkeypatch.setattr(consumer_cli, "run_one", fake_run_one)
-    monkeypatch.setattr(consumer_cli, "prepare_lerobot_upload_item", fake_prepare)
+    monkeypatch.setattr(consumer_cli, "prepare_lerobot_upload_batch", fake_prepare_batch)
+    monkeypatch.setattr(consumer_cli, "upload_converted_lerobot_batch", fake_upload_batch)
     monkeypatch.setattr(consumer_cli, "upload_lerobot_batch", fake_upload_batch)
 
 
@@ -525,9 +600,8 @@ def test_main_upload_mode_collects_full_batch_before_converting(monkeypatch, tmp
     assert rc == 0
 
     phases = [phase for phase, _ in call_log]
-    # All 5 collects must happen before the first convert,
-    # all 5 converts must happen before the upload.
-    assert phases == ["collect"] * 5 + ["convert"] * 5 + ["upload"]
+    # All 5 collects must happen before one batch conversion and one upload.
+    assert phases == ["collect"] * 5 + ["convert", "upload"]
 
     upload_payload = next(item for phase, item in call_log if phase == "upload")
     item_ids = upload_payload.split(":", maxsplit=1)[1].split(",")
@@ -575,7 +649,7 @@ def test_main_upload_mode_partial_last_batch_still_flushes(monkeypatch, tmp_path
     assert rc == 0
 
     phases = [phase for phase, _ in call_log]
-    assert phases == ["collect"] * 3 + ["convert"] * 3 + ["upload"]
+    assert phases == ["collect"] * 3 + ["convert", "upload"]
 
 
 def test_main_upload_mode_recovered_items_flush_on_first_batch(monkeypatch, tmp_path: Path) -> None:
@@ -653,12 +727,11 @@ def test_main_upload_mode_recovered_items_flush_on_first_batch(monkeypatch, tmp_
     assert rc == 0
 
     upload_payloads = [item for phase, item in call_log if phase == "upload"]
-    assert len(upload_payloads) == 1
-    item_ids = upload_payloads[0].split(":", maxsplit=1)[1].split(",")
-    # Recovered survivor is uploaded together with the new batch.
-    assert survivor_id in item_ids
-    assert "config_sfp_0001" in item_ids
-    assert "config_sfp_0002" in item_ids
+    assert len(upload_payloads) == 2
+    uploaded_ids = ",".join(upload_payloads)
+    assert survivor_id in uploaded_ids
+    assert "config_sfp_0001" in uploaded_ids
+    assert "config_sfp_0002" in uploaded_ids
 
 
 def test_main_upload_mode_fails_before_claim_when_converter_missing(monkeypatch, tmp_path: Path, capsys) -> None:
