@@ -2902,8 +2902,8 @@ if st is not None:
                     value=False,
                     key="exec_lerobot_upload_enabled",
                     help=(
-                        "ON이면 별도 자동화 프로세스가 아니라 이 워커가 각 성공 run 직후 "
-                        "검증→staging→rosbag-to-lerobot 변환→HF 업로드→remote verify를 이어서 수행합니다."
+                        "ON이면 별도 자동화 프로세스가 아니라 이 워커가 batch size만큼 먼저 수집하고, "
+                        "그 묶음을 검증→staging→rosbag-to-lerobot 변환→HF 업로드→remote verify 순서로 수행합니다."
                     ),
                 )
                 exec_hf_repo_id = ""
@@ -2959,7 +2959,7 @@ if st is not None:
                             step=1,
                             key="exec_upload_batch_size",
                             help=(
-                                "몇 개를 모아 한 번에 LeRobot 변환 결과를 HF에 업로드할지입니다. "
+                                "몇 개를 먼저 수집한 뒤 그 묶음을 모두 변환하고 한 번에 HF에 업로드할지입니다. "
                                 "예: 총 처리 수 800 + batch size 20 = 20개씩 40회 업로드/정리."
                             ),
                         )
