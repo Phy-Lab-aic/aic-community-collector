@@ -1,0 +1,61 @@
+# Team-wide preset for the v4 round — SC half.
+# Edits are changes to the team contract — open a PR.
+#
+# Pairs with `preset_v4_sfp.yaml`. Splitting the v4 round into two
+# task-scoped presets lets the SFP and SC halves be submitted, collected,
+# reconciled, and uploaded independently. Each half has its own ledger and
+# its own preset_hash.
+#
+# Scope layout (2 SC trials = 2 rails × 1 port each):
+#   trial_11 : SC rail 0, sc_port_0
+#   trial_12 : SC rail 1, sc_port_1   (== v3 trial_3)
+#
+# Trial ids continue the SFP numbering (1..10) so the merged v4 layout
+# stays trial_1..trial_12 across both halves. Each preset file still has
+# its own preset_hash and ledger; the shared numbering is purely for human
+# readability when cross-referencing with `preset_v4_12scope.yaml`.
+#
+# Distribution (300 ep total, 150 per scope, 1 member):
+#   - M0 한준모: trial_11 + trial_12   (150 + 150 = 300)
+#
+# M0 owns SC alone because SC is the smaller half and concentrating it on a
+# single dedicated machine avoids needing to keep an SC scene loaded on a
+# multi-task collector. Add a second SC member later if 300 ep is too slow
+# for a single shift.
+#
+# Score gate stays at 94 (see docs/team-1800-round.md).
+
+version: 4
+team:
+  base_seed: 43
+  shard_stride: 100000
+  index_width: 6
+sampling:
+  strategy: lhs
+  ranges:
+    nic_translation: [-0.0215, 0.0234]
+    nic_yaw: [-0.1745, 0.1745]
+    sc_translation: [-0.06, 0.055]
+    gripper_xy: 0.002
+    gripper_z: 0.002
+    gripper_rpy: 0.04
+scene:
+  nic_count_range: [1, 1]
+  sc_count_range: [1, 1]
+  target_cycling: true
+tasks:
+  sfp_default_count: 0
+  sc_default_count: 0
+trials:
+  trial_11:
+    task_type: sc
+    fixed_target: {rail: 0, port: sc_port_0}
+  trial_12:
+    task_type: sc
+    fixed_target: {rail: 1, port: sc_port_1}
+members:
+  - id: M0
+    name: 한준모
+    assignments:
+      - {trial: trial_11, count: 150}
+      - {trial: trial_12, count: 150}

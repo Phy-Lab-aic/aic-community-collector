@@ -1,0 +1,112 @@
+# Team-wide preset for the v4 round — SFP half.
+# Edits are changes to the team contract — open a PR.
+#
+# Pairs with `preset_v4_sc.yaml`. Splitting the v4 round into two
+# task-scoped presets lets the SFP and SC halves be submitted, collected,
+# reconciled, and uploaded independently — a stuck SC machine never blocks
+# SFP progress and vice versa. Each half has its own ledger and its own
+# preset_hash.
+#
+# Scope layout (10 SFP trials = 5 rails × 2 ports):
+#   trial_1  : NIC rail 0, sfp_port_0   (== v3 trial_1)
+#   trial_2  : NIC rail 0, sfp_port_1
+#   trial_3  : NIC rail 1, sfp_port_0   (== v3 trial_2)
+#   trial_4  : NIC rail 1, sfp_port_1
+#   trial_5  : NIC rail 2, sfp_port_0
+#   trial_6  : NIC rail 2, sfp_port_1
+#   trial_7  : NIC rail 3, sfp_port_0
+#   trial_8  : NIC rail 3, sfp_port_1
+#   trial_9  : NIC rail 4, sfp_port_0
+#   trial_10 : NIC rail 4, sfp_port_1
+#
+# Distribution (1500 ep total, 150 per scope, 300 per member):
+#   - M1 전유진: trial_1  + trial_2     (rail 0; 150 + 150 = 300)
+#   - M2 이진형: trial_3  + trial_4     (rail 1; 150 + 150 = 300)
+#   - M3 정혜린: trial_5  + trial_6     (rail 2; 150 + 150 = 300)
+#   - M4 엄창용: trial_7  + trial_8     (rail 3; 150 + 150 = 300)
+#   - M5 이강인: trial_9  + trial_10    (rail 4; 150 + 150 = 300)
+#
+# Why one rail per member: keeps the collector machine on a fixed scene
+# layout for the whole shift (only the port flips between trials), which
+# cuts USD reload time and lets each member tune to one rail's quirks.
+#
+# Score gate stays at 94 (see docs/team-1800-round.md).
+
+version: 4
+team:
+  base_seed: 43
+  shard_stride: 100000
+  index_width: 6
+sampling:
+  strategy: lhs
+  ranges:
+    nic_translation: [-0.0215, 0.0234]
+    nic_yaw: [-0.1745, 0.1745]
+    sc_translation: [-0.06, 0.055]
+    gripper_xy: 0.002
+    gripper_z: 0.002
+    gripper_rpy: 0.04
+scene:
+  nic_count_range: [1, 1]
+  sc_count_range: [1, 1]
+  target_cycling: true
+tasks:
+  sfp_default_count: 0
+  sc_default_count: 0
+trials:
+  trial_1:
+    task_type: sfp
+    fixed_target: {rail: 0, port: sfp_port_0}
+  trial_2:
+    task_type: sfp
+    fixed_target: {rail: 0, port: sfp_port_1}
+  trial_3:
+    task_type: sfp
+    fixed_target: {rail: 1, port: sfp_port_0}
+  trial_4:
+    task_type: sfp
+    fixed_target: {rail: 1, port: sfp_port_1}
+  trial_5:
+    task_type: sfp
+    fixed_target: {rail: 2, port: sfp_port_0}
+  trial_6:
+    task_type: sfp
+    fixed_target: {rail: 2, port: sfp_port_1}
+  trial_7:
+    task_type: sfp
+    fixed_target: {rail: 3, port: sfp_port_0}
+  trial_8:
+    task_type: sfp
+    fixed_target: {rail: 3, port: sfp_port_1}
+  trial_9:
+    task_type: sfp
+    fixed_target: {rail: 4, port: sfp_port_0}
+  trial_10:
+    task_type: sfp
+    fixed_target: {rail: 4, port: sfp_port_1}
+members:
+  - id: M1
+    name: 전유진
+    assignments:
+      - {trial: trial_1, count: 150}
+      - {trial: trial_2, count: 150}
+  - id: M2
+    name: 이진형
+    assignments:
+      - {trial: trial_3, count: 150}
+      - {trial: trial_4, count: 150}
+  - id: M3
+    name: 정혜린
+    assignments:
+      - {trial: trial_5, count: 150}
+      - {trial: trial_6, count: 150}
+  - id: M4
+    name: 엄창용
+    assignments:
+      - {trial: trial_7, count: 150}
+      - {trial: trial_8, count: 150}
+  - id: M5
+    name: 이강인
+    assignments:
+      - {trial: trial_9, count: 150}
+      - {trial: trial_10, count: 150}
