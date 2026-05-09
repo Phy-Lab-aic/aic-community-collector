@@ -411,7 +411,7 @@ def save_camera_bag_task(run_tag: str, run_idx: int, run_dir: str) -> None:
         dst_dir = Path(run_dir) / "bag"
         dst_dir.mkdir(parents=True, exist_ok=True)
         for mcap in mcaps:
-            dst = dst_dir / f"camera_{mcap.name}"
+            dst = dst_dir / f"a_camera_{mcap.name}"
             shutil.copy2(mcap, dst)
             print(f"[camera-bag] {mcap.name} → {dst}")
 
