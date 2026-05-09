@@ -1,22 +1,46 @@
-# Team-wide preset for trial-sharded 1800-episode round (2026-05-07, layout v3).
-# Edits are changes to the team contract - open a PR.
+# Team-wide default preset (v4 — 12-scope round).
+# Edits are changes to the team contract — open a PR.
 #
-# Layout:
-#   trial_1: SFP, NIC rail 0 (sfp_port_0)
-#   trial_2: SFP, NIC rail 1 (sfp_port_0)
-#   trial_3: SC,  SC  rail 1 (sc_port_1)
+# Promoted from `preset_v4_12scope.yaml` so the legacy single-preset path
+# (`webapp.PRESET_PATH`) and any tooling that defaults to `preset.yaml`
+# now operate on the full 12-scope contract.
 #
-# Distribution (option A):
-#   - M0 한준모: trial_3 x 600 (sole owner)
-#   - M1..M5:   trial_1 x 120 + trial_2 x 120 = 240 each (5 members x 240 = 1200)
-#   Total: 600 (trial_1) + 600 (trial_2) + 600 (trial_3) = 1800.
+# Scope layout (12 trials):
+#   trial_1  : SFP, NIC rail 0, sfp_port_0
+#   trial_2  : SFP, NIC rail 0, sfp_port_1
+#   trial_3  : SFP, NIC rail 1, sfp_port_0
+#   trial_4  : SFP, NIC rail 1, sfp_port_1
+#   trial_5  : SFP, NIC rail 2, sfp_port_0
+#   trial_6  : SFP, NIC rail 2, sfp_port_1
+#   trial_7  : SFP, NIC rail 3, sfp_port_0
+#   trial_8  : SFP, NIC rail 3, sfp_port_1
+#   trial_9  : SFP, NIC rail 4, sfp_port_0
+#   trial_10 : SFP, NIC rail 4, sfp_port_1
+#   trial_11 : SC,  SC  rail 0, sc_port_0
+#   trial_12 : SC,  SC  rail 1, sc_port_1
 #
-# Score gate: trial total < 94 -> requeued via `aic-collector` reconcile-score
-# + requeue-low-score (see docs/team-1800-round.md).
+# Distribution (1800 ep total, 150 per scope, 300 per member):
+#   - M0 한준모: trial_11 + trial_12          (SC owner; 150 + 150 = 300)
+#   - M1 전유진: trial_1  + trial_2           (SFP rail 0; 150 + 150 = 300)
+#   - M2 이진형: trial_3  + trial_4           (SFP rail 1; 150 + 150 = 300)
+#   - M3 정혜린: trial_5  + trial_6           (SFP rail 2; 150 + 150 = 300)
+#   - M4 엄창용: trial_7  + trial_8           (SFP rail 3; 150 + 150 = 300)
+#   - M5 이강인: trial_9  + trial_10          (SFP rail 4; 150 + 150 = 300)
+#
+# Each member stays on a fixed scene layout for their whole shift (only the
+# port flips between trials), so USD reload time stays low and per-rail
+# quirks stay contained to one operator. M0 owns both SC rails because SC
+# is the smaller half (300 ep) and dedicating one machine to it avoids
+# loading SC alongside SFP scenes on a multi-task collector.
+#
+# Score gate stays at 94 (see docs/team-1800-round.md). The split-by-task
+# variants (`preset_v4_sfp.yaml`, `preset_v4_sc.yaml`) remain available for
+# operations that want SFP and SC ledgers fully decoupled; they share this
+# file's contract but each carry their own preset_hash.
 
-version: 3
+version: 4
 team:
-  base_seed: 42
+  base_seed: 43
   shard_stride: 100000
   index_width: 6
 sampling:
@@ -41,37 +65,65 @@ trials:
     fixed_target: {rail: 0, port: sfp_port_0}
   trial_2:
     task_type: sfp
-    fixed_target: {rail: 1, port: sfp_port_0}
+    fixed_target: {rail: 0, port: sfp_port_1}
   trial_3:
+    task_type: sfp
+    fixed_target: {rail: 1, port: sfp_port_0}
+  trial_4:
+    task_type: sfp
+    fixed_target: {rail: 1, port: sfp_port_1}
+  trial_5:
+    task_type: sfp
+    fixed_target: {rail: 2, port: sfp_port_0}
+  trial_6:
+    task_type: sfp
+    fixed_target: {rail: 2, port: sfp_port_1}
+  trial_7:
+    task_type: sfp
+    fixed_target: {rail: 3, port: sfp_port_0}
+  trial_8:
+    task_type: sfp
+    fixed_target: {rail: 3, port: sfp_port_1}
+  trial_9:
+    task_type: sfp
+    fixed_target: {rail: 4, port: sfp_port_0}
+  trial_10:
+    task_type: sfp
+    fixed_target: {rail: 4, port: sfp_port_1}
+  trial_11:
+    task_type: sc
+    fixed_target: {rail: 0, port: sc_port_0}
+  trial_12:
     task_type: sc
     fixed_target: {rail: 1, port: sc_port_1}
 members:
   - id: M0
     name: 한준모
     assignments:
-      - {trial: trial_3, count: 600}
+      - {trial: trial_11, count: 150}
+      - {trial: trial_12, count: 150}
   - id: M1
     name: 전유진
     assignments:
-      - {trial: trial_1, count: 120}
-      - {trial: trial_2, count: 120}
+      - {trial: trial_1, count: 150}
+      - {trial: trial_2, count: 150}
   - id: M2
     name: 이진형
     assignments:
-      - {trial: trial_1, count: 120}
-      - {trial: trial_2, count: 120}
+      - {trial: trial_3, count: 150}
+      - {trial: trial_4, count: 150}
   - id: M3
     name: 정혜린
     assignments:
-      - {trial: trial_1, count: 120}
-      - {trial: trial_2, count: 120}
+      - {trial: trial_5, count: 150}
+      - {trial: trial_6, count: 150}
   - id: M4
     name: 엄창용
     assignments:
-      - {trial: trial_1, count: 120}
-      - {trial: trial_2, count: 120}
+      - {trial: trial_7, count: 150}
+      - {trial: trial_8, count: 150}
   - id: M5
     name: 이강인
     assignments:
-      - {trial: trial_1, count: 120}
-      - {trial: trial_2, count: 120}
+      - {trial: trial_9, count: 150}
+      - {trial: trial_10, count: 150}
