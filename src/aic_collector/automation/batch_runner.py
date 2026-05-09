@@ -31,8 +31,41 @@ from aic_collector.automation.manifest import (
 )
 
 
+# Camera image topics that must be present in the recorded MCAP for the
+# converter to read raw 20 Hz frames. If any are missing the converter
+# silently falls back to per-step PNG dumps, which run at the policy loop
+# rate (~12 Hz) and yield 83 ms timestamps in the published parquet.
+REQUIRED_MCAP_CAMERA_TOPICS: tuple[str, ...] = (
+    "/left_camera/image",
+    "/center_camera/image",
+    "/right_camera/image",
+)
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _mcap_channel_topics(mcap_path: Path) -> set[str] | None:
+    """Return the set of channel topics in `mcap_path`.
+
+    Returns ``None`` when the mcap library is unavailable or the file is
+    unreadable so callers can treat the result as inconclusive instead of
+    failing closed on an environment problem.
+    """
+    try:
+        from mcap.stream_reader import StreamReader  # type: ignore
+    except ImportError:
+        return None
+    topics: set[str] = set()
+    try:
+        with open(mcap_path, "rb") as fp:
+            for record in StreamReader(fp, record_size_limit=None).records:
+                if type(record).__name__ == "Channel":
+                    topics.add(record.topic)
+    except Exception:
+        return None
+    return topics
 
 
 def build_worker_command(
@@ -204,6 +237,15 @@ def validate_run_artifacts(run_dir: Path, *, collect_episode: bool = True) -> di
     check("run_dir", run_dir.exists(), str(run_dir))
     mcap_files = list(run_dir.rglob("*.mcap")) if run_dir.exists() else []
     check("mcap", bool(mcap_files), f"{len(mcap_files)} files")
+    if mcap_files:
+        topics = _mcap_channel_topics(mcap_files[0])
+        if topics is not None:
+            missing = [t for t in REQUIRED_MCAP_CAMERA_TOPICS if t not in topics]
+            check(
+                "camera_image_topics",
+                not missing,
+                "all 3 camera image topics present" if not missing else f"missing: {missing}",
+            )
     tags = run_dir / "tags.json"
     trial_tags = list(run_dir.glob("trial_*_score*/tags.json")) if run_dir.exists() else []
     check("tags", tags.exists() or bool(trial_tags), "tags.json or trial tags")

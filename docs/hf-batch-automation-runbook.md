@@ -16,6 +16,9 @@
   `limit`은 전체 episode 수이고, `upload_batch_size`는
   수집/변환/업로드/정리 묶음 크기입니다. 별도 "Batch → LeRobot → Hugging Face"
   패널을 추가하지 않습니다.
+- `--async-upload`를 켜면 변환 완료 batch의 Hugging Face 업로드는 백그라운드
+  스레드에서 진행하고, 워커는 다음 batch 수집을 계속합니다. 기본값은 기존처럼
+  직렬 실행이며, 워커 종료 전에는 미완료 업로드를 모두 기다립니다.
 - Hugging Face 업로드 런타임 의존성은 `huggingface_hub`입니다.
 
 ## Hugging Face 인증
@@ -52,6 +55,7 @@ PY
 # 5) 워커에는 repo id만 넘깁니다. 인증 정보는 환경변수에서 읽습니다.
 uv run aic-collector-worker --root configs/train --task all \
     --limit 20 --upload-batch-size 5 \
+    --async-upload \
     --policy cheatcode --collect-episode true \
     --hf-repo-id "$AIC_HF_REPO_ID" \
     --converter-path third_party/rosbag-to-lerobot

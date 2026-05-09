@@ -237,6 +237,84 @@ def test_validate_run_artifacts_requires_mcap_tags_and_episode(tmp_path: Path) -
     assert validate_run_artifacts(run_dir)["ok"] is False
 
 
+def test_validate_run_artifacts_rejects_mcap_without_camera_image_topics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aic_collector.automation import batch_runner as br
+
+    run_dir = tmp_path / "run_missing_cameras"
+    (run_dir / "bag").mkdir(parents=True)
+    mcap = run_dir / "bag/data.mcap"
+    mcap.write_bytes(b"mcap")
+    (run_dir / "tags.json").write_text("{}")
+    (run_dir / "episode").mkdir()
+    (run_dir / "validation.json").write_text('{"success": true}')
+
+    # Camera image topics absent — only camera_info present (the failure mode
+    # that produced 12 Hz datasets when the converter fell back to PNG dumps).
+    monkeypatch.setattr(
+        br,
+        "_mcap_channel_topics",
+        lambda _path: {
+            "/joint_states",
+            "/left_camera/camera_info",
+            "/center_camera/camera_info",
+            "/right_camera/camera_info",
+        },
+    )
+    result = br.validate_run_artifacts(run_dir)
+    assert result["ok"] is False
+    cam_check = next(c for c in result["checks"] if c["name"] == "camera_image_topics")
+    assert cam_check["ok"] is False
+    assert "/left_camera/image" in cam_check["detail"]
+
+
+def test_validate_run_artifacts_passes_when_all_camera_image_topics_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aic_collector.automation import batch_runner as br
+
+    run_dir = tmp_path / "run_with_cameras"
+    (run_dir / "bag").mkdir(parents=True)
+    (run_dir / "bag/data.mcap").write_bytes(b"mcap")
+    (run_dir / "tags.json").write_text("{}")
+    (run_dir / "episode").mkdir()
+    (run_dir / "validation.json").write_text('{"success": true}')
+
+    monkeypatch.setattr(
+        br,
+        "_mcap_channel_topics",
+        lambda _path: {
+            "/joint_states",
+            "/left_camera/image",
+            "/center_camera/image",
+            "/right_camera/image",
+        },
+    )
+    result = br.validate_run_artifacts(run_dir)
+    assert result["ok"] is True
+    cam_check = next(c for c in result["checks"] if c["name"] == "camera_image_topics")
+    assert cam_check["ok"] is True
+
+
+def test_validate_run_artifacts_skips_camera_check_when_mcap_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aic_collector.automation import batch_runner as br
+
+    run_dir = tmp_path / "run_unreadable_mcap"
+    (run_dir / "bag").mkdir(parents=True)
+    (run_dir / "bag/data.mcap").write_bytes(b"mcap")
+    (run_dir / "tags.json").write_text("{}")
+    (run_dir / "episode").mkdir()
+    (run_dir / "validation.json").write_text('{"success": true}')
+
+    monkeypatch.setattr(br, "_mcap_channel_topics", lambda _path: None)
+    result = br.validate_run_artifacts(run_dir)
+    assert result["ok"] is True
+    assert all(c["name"] != "camera_image_topics" for c in result["checks"])
+
+
 def test_validate_run_artifacts_accepts_prefect_validation_summary(tmp_path: Path) -> None:
     from aic_collector.automation.batch_runner import validate_run_artifacts
 
