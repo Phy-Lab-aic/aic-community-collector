@@ -1,12 +1,13 @@
-# 커뮤니티용 config — 카메라 토픽 추가 + NIC 카드 랜덤화용
-# 이 파일은 collect_community.sh 스크립트에서 NIC 위치/각도를 랜덤으로 치환하여 사용한다.
+# Community config — adds camera topics + NIC card randomization placeholders.
+# This file is consumed by collect_community.sh which substitutes NIC/SC translation/yaw values.
 #
-# 기본 sample_config.yaml 대비 차이:
-#   1. 카메라 3대 (compressed) + camera_info 6개 토픽 추가
-#   2. NIC/SC 카드 translation, yaw 값이 플레이스홀더 (__NIC_TRANSLATION__, __NIC_YAW__ 등)
+# Differences from sample_config.yaml:
+#   1. 3 cameras (raw sensor_msgs/Image) + 6 camera_info topics added.
+#   2. NIC/SC translation/yaw values are placeholders (__NIC_TRANSLATION__, __NIC_YAW__, ...).
 #
-# 주의: 카메라 토픽은 image_transport republish 노드가 compressed 토픽을 발행해야 기록됨
-#       run_engine_loop_community.sh 에서 자동으로 republish 노드를 시작함
+# Image format: raw `/cam/image` topics are recorded directly into the mcap so the converter
+# (rosbag-to-lerobot) reads sim-rate (20 Hz) frames without any policy-side PNG dump. The
+# image_transport `republish` node (compressed) is no longer used for community collection.
 
 scoring:
   topics:
@@ -42,16 +43,16 @@ scoring:
     - topic:
         name: "/aic_controller/controller_state"
         type: "aic_control_interfaces/msg/ControllerState"
-    # === 카메라 토픽 — compressed (image_transport republish 경유) ===
+    # === Camera topics — raw sensor_msgs/Image direct from sim (no republish) ===
     - topic:
-        name: "/left_camera/image/compressed"
-        type: "sensor_msgs/msg/CompressedImage"
+        name: "/left_camera/image"
+        type: "sensor_msgs/msg/Image"
     - topic:
-        name: "/center_camera/image/compressed"
-        type: "sensor_msgs/msg/CompressedImage"
+        name: "/center_camera/image"
+        type: "sensor_msgs/msg/Image"
     - topic:
-        name: "/right_camera/image/compressed"
-        type: "sensor_msgs/msg/CompressedImage"
+        name: "/right_camera/image"
+        type: "sensor_msgs/msg/Image"
     - topic:
         name: "/left_camera/camera_info"
         type: "sensor_msgs/msg/CameraInfo"
