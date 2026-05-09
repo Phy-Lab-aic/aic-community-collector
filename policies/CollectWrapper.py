@@ -115,10 +115,11 @@ class CollectWrapper(Policy):
         ep_name = f"episode_{self._episode_counter:04d}"
         self._ep_dir = self._save_dir / ep_name
 
-        if self._collect_episode:
-            (self._ep_dir / "images" / "left").mkdir(parents=True, exist_ok=True)
-            (self._ep_dir / "images" / "center").mkdir(parents=True, exist_ok=True)
-            (self._ep_dir / "images" / "right").mkdir(parents=True, exist_ok=True)
+        # Camera frames are recorded into the mcap as raw sensor_msgs/Image at sim rate
+        # (~20 Hz). Per-step PNG dumps used to live here but synchronous PNG encoding for
+        # 3 × 1152×1024 frames cost ~30 ms / step and dragged the policy loop down to
+        # ~12 Hz; the converter (rosbag-to-lerobot) reads the bag directly so no on-disk
+        # image folder is needed.
 
         self._states = []
         self._actions = []
@@ -169,13 +170,11 @@ class CollectWrapper(Policy):
                 self.get_logger().warn(f"[CollectWrapper] Could not read TF for {frame}")
 
     def _record_step(self, obs: Observation, action_pose: Pose):
-        # 카메라 이미지 (PNG)
-        for cam_name, img_msg in [("left", obs.left_image), ("center", obs.center_image), ("right", obs.right_image)]:
-            img_np = np.frombuffer(img_msg.data, dtype=np.uint8).reshape(img_msg.height, img_msg.width, 3)
-            img_path = self._ep_dir / "images" / cam_name / f"{self._step:04d}.png"
-            cv2.imwrite(str(img_path), cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
+        # Camera frames are intentionally not dumped to PNG here; doing so synchronously
+        # keeps the loop above ~80 ms / step. The mcap already carries sensor_msgs/Image
+        # at sim rate, which the converter consumes directly.
 
-        # 로봇 상태 (26D)
+        # Robot state (26D).
         tcp_pose = obs.controller_state.tcp_pose
         tcp_vel = obs.controller_state.tcp_velocity
         state = np.array([

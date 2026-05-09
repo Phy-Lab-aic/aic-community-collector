@@ -1009,6 +1009,52 @@ def load_run_validations(output_root: Path = OUTPUT_ROOT) -> list[dict]:
     return warnings_list
 
 
+def load_hz_reports(output_root: Path = OUTPUT_ROOT) -> list[dict]:
+    """run_*/(trial_*_score*|.)/hz_report.json을 모아 UI에서 쓰기 좋은 형태로 반환.
+
+    각 항목 = {run, trial_dir, summary, duration_check, camera_sync, topics}.
+    가장 최근 20 run만 스캔한다 (성능).
+    """
+    out: list[dict] = []
+    if not output_root.exists():
+        return out
+
+    def _label(run_dir: Path, td: Path) -> str:
+        if td == run_dir:
+            return run_dir.name
+        return f"{run_dir.name}/{td.name}"
+
+    run_dirs = sorted(output_root.glob("run_*"), reverse=True)[:20]
+    for run_dir in run_dirs:
+        # flat: run_dir/hz_report.json
+        # legacy: run_dir/trial_*_score*/hz_report.json
+        candidates: list[Path] = []
+        flat_hz = run_dir / "hz_report.json"
+        if flat_hz.exists():
+            candidates.append(run_dir)
+        candidates.extend(
+            td for td in sorted(run_dir.glob("trial_*_score*")) if (td / "hz_report.json").exists()
+        )
+        for td in candidates:
+            try:
+                report = json.loads((td / "hz_report.json").read_text())
+            except Exception:
+                continue
+            out.append(
+                {
+                    "run": run_dir.name,
+                    "label": _label(run_dir, td),
+                    "summary": report.get("summary") or {},
+                    "duration_check": report.get("duration_check") or {},
+                    "camera_sync": report.get("camera_sync"),
+                    "topics": report.get("topics") or [],
+                    "target_hz": report.get("target_hz"),
+                    "min_ratio": report.get("min_ratio"),
+                }
+            )
+    return out
+
+
 def load_results(output_root: Path = OUTPUT_ROOT) -> list[dict]:
     """output_root의 run들에서 tags.json을 읽어 rows 반환.
 
@@ -1022,6 +1068,16 @@ def load_results(output_root: Path = OUTPUT_ROOT) -> list[dict]:
 
     def _row(tags: dict, run_name: str, run_time: str) -> dict:
         dur_raw = tags.get("trial_duration_sec")
+        hz_summary = tags.get("hz_summary") or {}
+        avg_hz = hz_summary.get("avg_hz")
+        drop_rate = hz_summary.get("drop_rate")
+        all_pass = hz_summary.get("all_pass")
+        if all_pass is True:
+            hz_status = "✅"
+        elif all_pass is False:
+            hz_status = "⚠️"
+        else:
+            hz_status = ""
         return {
             "time": run_time,
             "run": run_name,
@@ -1029,6 +1085,11 @@ def load_results(output_root: Path = OUTPUT_ROOT) -> list[dict]:
             "score": round(tags.get("scoring", {}).get("total", 0), 1),
             "success": "✅" if tags.get("success") else "❌",
             "duration": round(dur_raw, 1) if dur_raw is not None else None,
+            "Hz(avg)": round(avg_hz, 1) if isinstance(avg_hz, (int, float)) else None,
+            "drop%": round(drop_rate * 100, 1)
+            if isinstance(drop_rate, (int, float))
+            else None,
+            "Hz상태": hz_status,
             "policy": tags.get("policy", "?"),
             "조기종료": "⚡" if tags.get("early_terminated") else "",
         }
@@ -2846,8 +2907,11 @@ if st is not None:
                     )
                 with col_comp:
                     exec_use_compressed = st.checkbox(
-                        "use_compressed", value=True, key="exec_comp",
-                        help="카메라 이미지 JPEG 압축 (~3GB/run). 끄면 raw (~58GB/run).",
+                        "use_compressed", value=False, key="exec_comp",
+                        help=(
+                            "켜면 JPEG CompressedImage 토픽 사용. 끄면 raw Image 토픽을 "
+                            "유지하고 MCAP storage zstd 압축을 사용."
+                        ),
                     )
                 with col_ep:
                     exec_collect_episode = st.checkbox(
@@ -2899,8 +2963,8 @@ if st is not None:
                     value=False,
                     key="exec_lerobot_upload_enabled",
                     help=(
-                        "ON이면 별도 자동화 프로세스가 아니라 이 워커가 각 성공 run 직후 "
-                        "검증→staging→rosbag-to-lerobot 변환→HF 업로드→remote verify를 이어서 수행합니다."
+                        "ON이면 별도 자동화 프로세스가 아니라 이 워커가 batch size만큼 먼저 수집하고, "
+                        "그 묶음을 검증→staging→rosbag-to-lerobot 변환→HF 업로드→remote verify 순서로 수행합니다."
                     ),
                 )
                 exec_hf_repo_id = ""
@@ -2956,7 +3020,7 @@ if st is not None:
                             step=1,
                             key="exec_upload_batch_size",
                             help=(
-                                "몇 개를 모아 한 번에 LeRobot 변환 결과를 HF에 업로드할지입니다. "
+                                "몇 개를 먼저 수집한 뒤 그 묶음을 모두 변환하고 한 번에 HF에 업로드할지입니다. "
                                 "예: 총 처리 수 800 + batch size 20 = 20개씩 40회 업로드/정리."
                             ),
                         )
@@ -3213,6 +3277,124 @@ if st is not None:
                         )
                         for w in v["warnings"]:
                             st.markdown(f"  - ⚠️ {w}")
+
+            # 수집 품질 (Hz / timestamp 분석)
+            hz_reports = load_hz_reports(result_output_root)
+            if hz_reports:
+                fail_count = sum(
+                    1
+                    for r in hz_reports
+                    if not (r.get("summary") or {}).get("all_pass", True)
+                )
+                title = (
+                    f"📈 수집 품질 (Hz) — {len(hz_reports)}건"
+                    + (f", ⚠️ {fail_count}건 미달" if fail_count else "")
+                )
+                with st.expander(title, expanded=False):
+                    st.caption(
+                        "각 trial의 MCAP에서 토픽별 실측 Hz와 timestamp 간격을 분석합니다. "
+                        "기준 = 20 Hz × 0.7 (= 14 Hz)."
+                    )
+
+                    summary_rows = []
+                    for r in hz_reports:
+                        s = r.get("summary") or {}
+                        d = r.get("duration_check") or {}
+                        cam = r.get("camera_sync") or {}
+                        summary_rows.append(
+                            {
+                                "trial": r.get("label", r.get("run", "?")),
+                                "avg_hz": s.get("avg_hz"),
+                                "worst": s.get("worst_topic"),
+                                "worst_hz": s.get("worst_hz"),
+                                "drop%": round(float(s.get("drop_rate", 0.0)) * 100, 1),
+                                "all_pass": "✅" if s.get("all_pass") else "⚠️",
+                                "sim/wall": (
+                                    f"{(d.get('drift_ratio') or 0) * 100:.1f}%"
+                                    if d.get("drift_ratio") is not None
+                                    else "—"
+                                ),
+                                "wall>sim?": "⚠️" if d.get("mismatch") else "",
+                                "cam p95": (
+                                    f"{cam.get('p95_skew_ms', 0):.1f}ms" if cam else "—"
+                                ),
+                            }
+                        )
+                    import pandas as pd
+
+                    summary_df = pd.DataFrame(summary_rows)
+                    st.dataframe(summary_df, width="stretch", hide_index=True)
+
+                    labels = [r.get("label", r.get("run", "?")) for r in hz_reports]
+                    selected_label = st.selectbox(
+                        "토픽별 상세",
+                        labels,
+                        key="hz_detail_selector",
+                    )
+                    selected = next(
+                        (r for r in hz_reports if r.get("label") == selected_label),
+                        hz_reports[0],
+                    )
+                    topics = selected.get("topics") or []
+                    if topics:
+                        topic_rows = [
+                            {
+                                "topic": t.get("topic"),
+                                "rate_critical": "✓" if t.get("rate_critical") else "",
+                                "valid": "✅" if t.get("valid") else "⚠️",
+                                "msgs": t.get("message_count"),
+                                "duration_s": t.get("duration_sec"),
+                                "actual_hz": t.get("actual_hz"),
+                                "median_gap_ms": t.get("median_gap_ms"),
+                                "p95_gap_ms": t.get("p95_gap_ms"),
+                                "max_gap_ms": t.get("max_gap_ms"),
+                                "expected": t.get("expected_count"),
+                                "dropped_est": t.get("dropped_estimate"),
+                            }
+                            for t in topics
+                        ]
+                        topic_df = pd.DataFrame(topic_rows)
+                        st.dataframe(topic_df, width="stretch", hide_index=True)
+
+                        # rate-critical 토픽만 막대그래프로 빠른 시각화.
+                        chart_df = topic_df[topic_df["rate_critical"] == "✓"][
+                            ["topic", "actual_hz"]
+                        ].set_index("topic")
+                        if not chart_df.empty:
+                            target = selected.get("target_hz") or 20.0
+                            min_ratio = selected.get("min_ratio") or 0.7
+                            st.caption(
+                                f"target {target:.0f} Hz / 최소 {target * min_ratio:.0f} Hz"
+                            )
+                            st.bar_chart(chart_df)
+
+                    cam = selected.get("camera_sync")
+                    if cam:
+                        cam_msg = (
+                            f"primary `{cam.get('primary')}` ↔ "
+                            f"others `{', '.join(cam.get('others') or [])}` — "
+                            f"median {cam.get('median_skew_ms', 0):.1f}ms / "
+                            f"p95 {cam.get('p95_skew_ms', 0):.1f}ms / "
+                            f"max {cam.get('max_skew_ms', 0):.1f}ms "
+                            f"(허용 {cam.get('tolerance_ms', 0):.1f}ms)"
+                        )
+                        if cam.get("out_of_tolerance_frames", 0) > 0:
+                            st.warning(
+                                f"카메라 동기 어긋남 — 프레임 "
+                                f"{cam['out_of_tolerance_frames']}/"
+                                f"{cam.get('total_frames', 0)} 가 허용오차 초과. "
+                                + cam_msg
+                            )
+                        else:
+                            st.caption(cam_msg)
+
+                    dur = selected.get("duration_check") or {}
+                    if dur.get("mismatch"):
+                        st.error(
+                            f"sim/wall 시계 불일치 — bag {dur.get('bag_duration_sec')}s "
+                            f"vs episode wall {dur.get('episode_wall_duration_sec')}s "
+                            f"({(dur.get('drift_ratio') or 0) * 100:.1f}% 차이)."
+                        )
     
             # CSV 다운로드 + 삭제
             col_dl, col_del = st.columns(2)

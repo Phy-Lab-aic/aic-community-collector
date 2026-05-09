@@ -13,7 +13,7 @@ from prefect import flow, task
 from prefect.artifacts import create_markdown_artifact
 
 from aic_collector.build_engine_config import build as build_engine_cfg
-from aic_collector.postprocess_run import process_run
+from aic_collector.postprocess_run import hz_report_warnings, process_run
 from aic_collector.sampler import sample_parameters
 
 from .policy_env import POLICY_CLASS, build_policy_env, deploy_policies
@@ -626,6 +626,15 @@ def _validate_run_dir(run_dir: Path, collect_episode: bool = False) -> dict:
         scoring_fn = "trial_scoring.yaml" if td == run_dir else "scoring.yaml"
         _check(f"{prefix}/{scoring_fn}", (td / scoring_fn).exists(), f"{prefix}: {scoring_fn} 없음")
         _check(f"{prefix}/tags.json", (td / "tags.json").exists(), f"{prefix}: tags.json 없음")
+
+        # Hz quality warnings — surfaced from postprocess_run's hz_report.json.
+        hz_path = td / "hz_report.json"
+        if hz_path.exists():
+            try:
+                hz_data = json.loads(hz_path.read_text())
+                warnings_list.extend(hz_report_warnings(hz_data, prefix))
+            except Exception as exc:
+                warnings_list.append(f"{prefix}: hz_report.json 파싱 실패 ({exc})")
 
     passed = sum(1 for c in checks if c["passed"])
     return {
