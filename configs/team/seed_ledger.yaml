@@ -125,3 +125,17 @@ entries:
   fixed_target:
     rail: 2
     port: sfp_port_0
+- member_id: M5
+  task_type: sfp
+  base_seed: 43
+  start_index: 400231
+  count: 25
+  strategy: lhs
+  queue_root: configs/train
+  preset_hash: sha256:81044ba67c8b45432ecedb245f5cd8cea671f3001bc673ba69a6b8a5661210b5
+  git_sha: 939fabfa93d22eef5dc229749d66e0ac9753e7a8
+  created_at: '2026-05-09T15:24:56Z'
+  trial_id: trial_5
+  fixed_target:
+    rail: 2
+    port: sfp_port_0
