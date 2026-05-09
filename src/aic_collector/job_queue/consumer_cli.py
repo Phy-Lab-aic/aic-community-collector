@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from aic_collector.job_queue.layout import TASK_TYPES
 from aic_collector.job_queue.state import queue_counts
+from aic_collector.job_queue.topic_migration import migrate_queue_root
 from aic_collector.job_queue.worker import (
     ClaimedConfig,
     claim_one,
@@ -948,6 +949,13 @@ def main() -> int:
                 "or pass --converter-path to an existing checkout.\n"
             )
             return 2
+
+    migrated_files, migrated_topics = migrate_queue_root(root)
+    if migrated_files:
+        print(
+            f"[migrate] healed {migrated_files} stale config(s) "
+            f"({migrated_topics} compressed camera topics → raw)"
+        )
 
     if args.recover:
         for tt in (targets or list(TASK_TYPES)):
