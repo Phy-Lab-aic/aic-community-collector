@@ -35,7 +35,9 @@ import argparse
 import json
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +106,101 @@ def find_bag_for_trial(engine_results: Path, trial_num: int) -> Path | None:
         if m and int(m.group(1)) == trial_num:
             return child
     return None
+
+
+def _bag_storage_config(engine_config: Path | None) -> dict[str, str]:
+    """Read collector-owned rosbag storage conversion settings from engine config."""
+    if not engine_config or not engine_config.exists():
+        return {}
+    try:
+        with open(engine_config) as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+    scoring = cfg.get("scoring") or {}
+    if not isinstance(scoring, dict):
+        return {}
+
+    out: dict[str, str] = {}
+    for key in ("storage_id", "storage_preset_profile", "storage_config_uri"):
+        value = scoring.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    return out
+
+
+def _compress_bag_storage(bag_dir: Path, storage_cfg: dict[str, str]) -> bool:
+    """Convert a moved bag directory to MCAP storage compression in-place.
+
+    The engine records the source bag. Collector postprocess owns this conversion
+    so upstream AIC scoring code can stay unchanged. If conversion fails, the
+    original bag directory is kept.
+    """
+    preset = storage_cfg.get("storage_preset_profile")
+    config_uri = storage_cfg.get("storage_config_uri")
+    if not preset and not config_uri:
+        return False
+
+    if shutil.which("ros2") is None:
+        print("[warn] ros2 CLI 없음 — bag storage compression 건너뜀")
+        return False
+
+    output_dir = bag_dir.with_name(f"{bag_dir.name}_storage_compressed")
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+
+    output_spec: dict[str, Any] = {
+        "uri": str(output_dir),
+        "storage_id": storage_cfg.get("storage_id", "mcap"),
+        "all": True,
+    }
+    if preset:
+        output_spec["storage_preset_profile"] = preset
+    if config_uri:
+        output_spec["storage_config_uri"] = config_uri
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        yaml.safe_dump({"output_bags": [output_spec]}, f, sort_keys=False)
+        convert_config = Path(f.name)
+
+    try:
+        proc = subprocess.run(
+            ["ros2", "bag", "convert", "-i", str(bag_dir), "-o", str(convert_config)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except Exception as exc:
+        print(f"[warn] bag storage compression 실패: {exc}")
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        return False
+    finally:
+        convert_config.unlink(missing_ok=True)
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or proc.stdout or "").strip()
+        print(
+            f"[warn] bag storage compression 실패(returncode={proc.returncode}): "
+            f"{stderr}"
+        )
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        return False
+
+    if not output_dir.exists() or not any(output_dir.glob("*.mcap")):
+        print("[warn] bag storage compression 결과 MCAP 없음 — 원본 유지")
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        return False
+
+    shutil.rmtree(bag_dir)
+    shutil.move(str(output_dir), str(bag_dir))
+    detail = preset or config_uri or "storage config"
+    print(f"[ok] bag storage compression 적용: {bag_dir} ({detail})")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +448,7 @@ def process_run(
     trial_order = load_trial_order(engine_config)
     if trial_order:
         print(f"[info] 엔진 trial 실행 순서: {trial_order}")
+    storage_cfg = _bag_storage_config(engine_config)
 
     # 2. trial별 재편
     per_trial = split_scoring(scoring)
@@ -401,6 +499,7 @@ def process_run(
                 shutil.rmtree(dst_bag)
             shutil.move(str(bag), str(dst_bag))
             print(f"[ok] {trial_key}: bag → {dst_bag}")
+            _compress_bag_storage(dst_bag, storage_cfg)
         else:
             print(f"[warn] {trial_key}: bag_trial_{trial_num}_* 없음 (엔진 bag 미기록?)")
 
