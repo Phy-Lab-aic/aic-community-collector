@@ -56,3 +56,5 @@ def test_webapp_no_longer_renders_separate_batch_automation_panel() -> None:
     assert "automation_start" not in source
     assert "총 처리 수 / limit (episodes, 0=무제한)" in source
     assert "Upload batch size (episodes)" in source
+    assert "업로드 중 다음 batch 수집 계속" in source
+    assert "--async-upload" in source

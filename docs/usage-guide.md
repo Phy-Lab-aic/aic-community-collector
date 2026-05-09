@@ -387,6 +387,7 @@ uv run aic-collector-worker --root configs/train --recover
 | `--log` | `/tmp/aic_worker_run.log` | 엔진 실행 로그(append) |
 | `--hf-repo-id` | (없음) | 지정하면 같은 워커가 성공 run을 LeRobot으로 변환하고 HF 업로드/remote verify까지 수행 |
 | `--upload-batch-size` | `1` | 몇 개씩 묶어 HF 업로드/remote verify/정리를 할지. 예: `--limit 800 --upload-batch-size 20` = 20개씩 40회 |
+| `--async-upload` | `false` | 켜면 batch 변환 후 HF 업로드를 백그라운드에서 진행하고 다음 batch 수집을 계속함. 종료 전 남은 업로드는 모두 대기 |
 | `--cleanup-after-upload` / `--no-cleanup-after-upload` | on | remote verify 후 raw run_dir/staging/LeRobot 임시 폴더 삭제 여부 |
 | `--automation-manifest` | `<output-root>/worker_lerobot_upload_manifest.jsonl` | 업로드/검증 manifest |
 | `--staging-root` / `--lerobot-root` | `/tmp/aic_worker_lerobot_*` | 변환 입력 staging / LeRobot 출력 루트 |

@@ -1,6 +1,7 @@
 """consumer_cli command-line plumbing tests (no real subprocess)."""
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -606,6 +607,76 @@ def test_main_upload_mode_collects_full_batch_before_converting(monkeypatch, tmp
     upload_payload = next(item for phase, item in call_log if phase == "upload")
     item_ids = upload_payload.split(":", maxsplit=1)[1].split(",")
     assert item_ids == [f"config_sfp_{i:04d}" for i in range(1, 6)]
+
+
+def test_main_async_upload_collects_next_batch_before_first_upload_finishes(monkeypatch, tmp_path: Path) -> None:
+    """With --async-upload, upload of batch 1 must not block collecting batch 2."""
+    queue_root = tmp_path / "queue"
+    queue_root.mkdir()
+    _build_upload_queue(queue_root, count=4)
+    converter_path = tmp_path / "converter"
+    _make_fake_converter(converter_path)
+    output_root = tmp_path / "out"
+    output_root.mkdir()
+
+    call_log: list[tuple[str, str]] = []
+    all_collected = threading.Event()
+
+    def fake_run_one(running_path, **kwargs):
+        name = Path(running_path).name
+        call_log.append(("collect", name))
+        if name == "config_sfp_0004.yaml":
+            all_collected.set()
+        return 0
+
+    def fake_prepare_batch(*, config, runs, output_root, collect_episode, batch_index):
+        item_ids = [run.claim.name.removesuffix(".yaml") for run in runs]
+        call_log.append(("convert", f"batch_{batch_index:04d}:{','.join(item_ids)}"))
+        batch = consumer_cli.PreparedLerobotBatch(
+            item_ids=item_ids,
+            run_dirs=[Path(output_root) / f"run_{run.run_tag}" for run in runs],
+            staged_paths=[config.staging_root / item_id for item_id in item_ids],
+            batch_staging_path=config.staging_root / "batches" / f"batch_{batch_index:04d}",
+            lerobot_path=config.lerobot_root / "upload_batches" / f"batch_{batch_index:04d}",
+        )
+        return batch, {"ok": True, "stage": "converted", "batch_item_id": f"batch_{batch_index:04d}"}
+
+    def fake_upload_batch(*, config, batch, batch_index):
+        call_log.append(("upload_start", f"batch_{batch_index:04d}"))
+        if batch_index == 1 and not all_collected.wait(timeout=2):
+            return {"ok": False, "stage": "upload", "batch_item_id": f"batch_{batch_index:04d}"}
+        call_log.append(("upload_done", f"batch_{batch_index:04d}"))
+        return {"ok": True, "stage": "remote_verified", "batch_item_id": f"batch_{batch_index:04d}"}
+
+    monkeypatch.setattr(consumer_cli, "run_one", fake_run_one)
+    monkeypatch.setattr(consumer_cli, "prepare_lerobot_upload_batch", fake_prepare_batch)
+    monkeypatch.setattr(consumer_cli, "upload_converted_lerobot_batch", fake_upload_batch)
+    monkeypatch.setattr(consumer_cli, "_default_worker_batch_id", lambda now=None: "batch-test-async")
+    monkeypatch.setattr(
+        consumer_cli.sys,
+        "argv",
+        [
+            "aic-collector-worker",
+            "--root", str(queue_root),
+            "--task", "sfp",
+            "--limit", "4",
+            "--state-file", str(tmp_path / "state.json"),
+            "--hf-repo-id", "org/repo",
+            "--converter-path", str(converter_path),
+            "--output-root", str(output_root),
+            "--staging-root", str(tmp_path / "stage"),
+            "--lerobot-root", str(tmp_path / "lerobot"),
+            "--automation-manifest", str(tmp_path / "manifest.jsonl"),
+            "--upload-batch-size", "2",
+            "--async-upload",
+            "--no-cleanup-after-upload",
+        ],
+    )
+
+    rc = consumer_cli.main()
+
+    assert rc == 0
+    assert call_log.index(("collect", "config_sfp_0003.yaml")) < call_log.index(("upload_done", "batch_0001"))
 
 
 def test_main_upload_mode_partial_last_batch_still_flushes(monkeypatch, tmp_path: Path) -> None:

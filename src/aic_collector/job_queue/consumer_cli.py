@@ -22,6 +22,7 @@ import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -891,6 +892,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--async-upload",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "LeRobot/HF 업로드를 백그라운드 스레드에서 수행해 업로드 중 다음 batch 수집을 계속함. "
+            "종료 전에는 미완료 업로드를 모두 기다림."
+        ),
+    )
+    parser.add_argument(
         "--cleanup-after-upload",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -939,7 +949,8 @@ def main() -> int:
         print(
             "[upload] LeRobot/HF 자동화 활성화: "
             f"repo={upload_config.hf_repo_id} manifest={upload_config.manifest_path} "
-            f"upload_batch_size={args.upload_batch_size} cleanup={upload_config.cleanup_after_upload}"
+            f"upload_batch_size={args.upload_batch_size} async={args.async_upload} "
+            f"cleanup={upload_config.cleanup_after_upload}"
         )
         converter_entrypoint = upload_config.converter_path / "src" / "main.py"
         if not converter_entrypoint.exists():
@@ -982,6 +993,11 @@ def main() -> int:
     pending_upload_items: list[PreparedLerobotItem] = []
     upload_batch_index = 0
     upload_batches_done = 0
+    upload_executor: ThreadPoolExecutor | None = (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="aic-hf-upload")
+        if upload_config is not None and args.async_upload else None
+    )
+    upload_futures: list[tuple[int, int, Future[dict[str, Any]]]] = []
     if upload_config is not None:
         recovered_upload_items, recovered_upload_failures = recover_converted_upload_items(upload_config)
         pending_upload_items.extend(recovered_upload_items)
@@ -996,20 +1012,32 @@ def main() -> int:
         if upload_config is None or not pending_upload_items:
             return None
         upload_batch_index += 1
+        batch_index = upload_batch_index
         batch_items = list(pending_upload_items)
         pending_upload_items.clear()
+        if upload_executor is not None:
+            future = upload_executor.submit(
+                upload_lerobot_batch,
+                config=upload_config,
+                items=batch_items,
+                batch_index=batch_index,
+            )
+            upload_futures.append((batch_index, len(batch_items), future))
+            print(f"[upload-async] batch {batch_index} ({len(batch_items)}개) 업로드 시작")
+            return None
+
         result = upload_lerobot_batch(
             config=upload_config,
             items=batch_items,
-            batch_index=upload_batch_index,
+            batch_index=batch_index,
         )
         if result.get("ok"):
             upload_batches_done += 1
-            print(f"[upload] batch {upload_batch_index} ({len(batch_items)}개) → remote_verified")
+            print(f"[upload] batch {batch_index} ({len(batch_items)}개) → remote_verified")
         else:
             upload_fail_count += len(batch_items)
             print(
-                f"[upload-fail] batch {upload_batch_index} "
+                f"[upload-fail] batch {batch_index} "
                 f"({len(batch_items)}개) stage={result.get('stage')}"
             )
         return result
@@ -1033,10 +1061,12 @@ def main() -> int:
             "failed": fail_count,
             "upload_failed": upload_fail_count,
             "upload_enabled": upload_config is not None,
+            "async_upload_enabled": upload_executor is not None,
             "upload_batch_size": args.upload_batch_size if upload_config is not None else None,
             "upload_batch_pending": len(pending_upload_items),
             "converted_batch_pending": len(pending_upload_batches),
             "collect_batch_pending": len(pending_collected_runs),
+            "upload_jobs_inflight": len(upload_futures),
             "upload_batches_done": upload_batches_done,
             "current": current,
             "current_path": current_path,
@@ -1196,8 +1226,59 @@ def main() -> int:
         })
         del recent[5:]
 
+    def _handle_upload_batch_result(batch_index: int, item_count: int, result: dict[str, Any]) -> None:
+        nonlocal upload_batches_done, upload_fail_count
+        if result.get("ok"):
+            upload_batches_done += 1
+            print(f"[upload] batch {batch_index} ({item_count}개) → remote_verified")
+        else:
+            upload_fail_count += item_count
+            print(f"[upload-fail] batch {batch_index} ({item_count}개) stage={result.get('stage')}")
+        _record_batch_recent_entry(result)
+
+    def _drain_finished_uploads(*, wait: bool = False) -> None:
+        if not upload_futures:
+            return
+        remaining: list[tuple[int, int, Future[dict[str, Any]]]] = []
+        for batch_index, item_count, future in upload_futures:
+            if wait or future.done():
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = {"ok": False, "stage": "upload", "error": f"{type(exc).__name__}: {exc}"}
+                _handle_upload_batch_result(batch_index, item_count, result)
+            else:
+                remaining.append((batch_index, item_count, future))
+        upload_futures[:] = remaining
+
+    def _upload_prepared_batch(prepared_batch: PreparedLerobotBatch) -> None:
+        nonlocal upload_batch_index
+        if upload_config is None:
+            return
+        upload_batch_index += 1
+        batch_index = upload_batch_index
+        item_count = len(prepared_batch.item_ids)
+        if upload_executor is not None:
+            future = upload_executor.submit(
+                upload_converted_lerobot_batch,
+                config=upload_config,
+                batch=prepared_batch,
+                batch_index=batch_index,
+            )
+            upload_futures.append((batch_index, item_count, future))
+            print(f"[upload-async] batch {batch_index} ({item_count}개) 업로드 시작")
+            return
+
+        batch_result = upload_converted_lerobot_batch(
+            config=upload_config,
+            batch=prepared_batch,
+            batch_index=batch_index,
+        )
+        _handle_upload_batch_result(batch_index, item_count, batch_result)
+
     try:
         while True:
+            _drain_finished_uploads()
             current_phase = "collecting"
             batch_target = (
                 args.upload_batch_size if upload_config is not None else 1
@@ -1227,35 +1308,20 @@ def main() -> int:
                     current=f"batch_{upload_batch_index + 1:04d}",
                 ), state_file=state_file)
                 for prepared_batch in list(pending_upload_batches):
-                    upload_batch_index += 1
                     pending_upload_batches.remove(prepared_batch)
-                    batch_result = upload_converted_lerobot_batch(
-                        config=upload_config,
-                        batch=prepared_batch,
-                        batch_index=upload_batch_index,
-                    )
-                    if batch_result.get("ok"):
-                        upload_batches_done += 1
-                        print(
-                            f"[upload] batch {upload_batch_index} "
-                            f"({len(prepared_batch.item_ids)}개) → remote_verified"
-                        )
-                    else:
-                        upload_fail_count += len(prepared_batch.item_ids)
-                        print(
-                            f"[upload-fail] batch {upload_batch_index} "
-                            f"({len(prepared_batch.item_ids)}개) stage={batch_result.get('stage')}"
-                        )
-                    _record_batch_recent_entry(batch_result)
+                    _upload_prepared_batch(prepared_batch)
                 if pending_upload_items:
                     batch_result = _flush_upload_batch()
                     if batch_result is not None:
                         _record_batch_recent_entry(batch_result)
+                _drain_finished_uploads()
 
             current_phase = "idle"
 
             if no_more_work:
                 break
+
+        _drain_finished_uploads(wait=True)
 
         elapsed = int(time.time() - t0)
         counts_after = {t: queue_counts(root, t) for t in (targets or list(TASK_TYPES))}
@@ -1276,6 +1342,9 @@ def main() -> int:
         _write_state(_snapshot(status="interrupted", finished=True), state_file=state_file)
         print("\n[interrupt] 워커 중단. running/에 남은 파일은 --recover로 복구 가능.")
         return 130
+    finally:
+        if upload_executor is not None:
+            upload_executor.shutdown(wait=True)
 
 
 if __name__ == "__main__":

@@ -2589,6 +2589,7 @@ if st is not None:
             converter_path: Path | None = None,
             hf_path_prefix: str | None = None,
             upload_batch_size: int | None = None,
+            async_upload: bool = False,
             cleanup_after_upload: bool = True,
         ) -> None:
             """aic-collector-worker를 백그라운드 subprocess로 기동."""
@@ -2634,6 +2635,8 @@ if st is not None:
                     cmd += ["--hf-path-prefix", hf_path_prefix]
                 if upload_batch_size is not None and upload_batch_size > 0:
                     cmd += ["--upload-batch-size", str(upload_batch_size)]
+                if async_upload:
+                    cmd += ["--async-upload"]
                 cmd += ["--cleanup-after-upload" if cleanup_after_upload else "--no-cleanup-after-upload"]
     
             # 워커가 webapp이 띄운 영구 Prefect 서버에 연결되도록 env 주입.
@@ -2746,11 +2749,13 @@ if st is not None:
                             f"{remaining}개 · ETA ~{eta_str}"
                         )
                         if current_w.get("upload_enabled"):
+                            async_text = "async" if current_w.get("async_upload_enabled") else "serial"
                             st.caption(
                                 "🤗 업로드 batch "
-                                f"{current_w.get('upload_batches_done', 0)}회 완료 · "
+                                f"{current_w.get('upload_batches_done', 0)}회 완료 · {async_text} · "
                                 f"대기 {current_w.get('upload_batch_pending', 0)}/"
-                                f"{current_w.get('upload_batch_size', '?')}"
+                                f"{current_w.get('upload_batch_size', '?')} · "
+                                f"진행 {current_w.get('upload_jobs_inflight', 0)}"
                             )
                 except Exception:
                     pass
@@ -2974,6 +2979,7 @@ if st is not None:
                 exec_converter_path = None
                 exec_hf_path_prefix = "worker"
                 exec_upload_batch_size = 1
+                exec_async_upload = False
                 exec_cleanup_after_upload = True
                 if exec_upload_enabled:
                     exec_hf_repo_id = st.text_input(
@@ -3031,6 +3037,15 @@ if st is not None:
                             key="exec_cleanup_after_upload",
                             help="업로드 remote verify가 끝난 batch의 raw run_dir, staging, LeRobot 임시 폴더를 삭제합니다.",
                         )
+                    exec_async_upload = st.checkbox(
+                        "업로드 중 다음 batch 수집 계속",
+                        value=False,
+                        key="exec_async_upload",
+                        help=(
+                            "ON이면 변환이 끝난 batch의 HF 업로드를 백그라운드에서 진행하고 "
+                            "워커는 바로 다음 config 수집을 계속합니다. 워커 종료 전에는 남은 업로드를 모두 기다립니다."
+                        ),
+                    )
                     st.caption("업로드 토큰은 `HF_TOKEN` 또는 `huggingface-cli login`에서만 읽고 UI/session에는 저장하지 않습니다.")
     
                 act_model_path = None
@@ -3081,11 +3096,18 @@ if st is not None:
                             converter_path=exec_converter_path if exec_upload_enabled else None,
                             hf_path_prefix=exec_hf_path_prefix if exec_upload_enabled else None,
                             upload_batch_size=int(exec_upload_batch_size) if exec_upload_enabled else None,
+                            async_upload=bool(exec_async_upload) if exec_upload_enabled else False,
                             cleanup_after_upload=bool(exec_cleanup_after_upload) if exec_upload_enabled else True,
                         )
                         st.success(
                             "워커 시작됨. "
-                            + ("LeRobot/HF 업로드까지 같은 워커에서 이어서 실행됩니다." if exec_upload_enabled else "아래 로그에서 진행 확인.")
+                            + (
+                                "LeRobot/HF 업로드를 백그라운드 병행 모드로 실행합니다."
+                                if exec_upload_enabled and exec_async_upload
+                                else "LeRobot/HF 업로드까지 같은 워커에서 이어서 실행됩니다."
+                                if exec_upload_enabled
+                                else "아래 로그에서 진행 확인."
+                            )
                         )
                         time.sleep(1)
                         st.rerun()
