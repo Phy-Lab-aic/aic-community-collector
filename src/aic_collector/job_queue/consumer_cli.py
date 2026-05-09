@@ -70,6 +70,17 @@ class PreparedLerobotItem:
     lerobot_path: Path
 
 
+@dataclass(frozen=True)
+class CollectedRun:
+    """A worker run that finished collection and is awaiting batch conversion."""
+
+    claim: ClaimedConfig
+    done_path: Path
+    run_tag: str
+    collect_started_at: str
+    collect_duration_sec: int
+
+
 def _item_id_from_claim(claim: ClaimedConfig) -> str:
     return claim.name.removesuffix(".yaml")
 
@@ -735,6 +746,9 @@ def main() -> int:
             )
         return result
 
+    pending_collected_runs: list[CollectedRun] = []
+    current_phase: str = "idle"
+
     def _snapshot(
         *, status: str, current: str | None = None,
         current_path: str | None = None,
@@ -743,6 +757,7 @@ def main() -> int:
     ) -> dict:
         s = {
             "status": status,
+            "phase": current_phase,
             "started_at": started_at,
             "processed": processed,
             "done": done_count,
@@ -751,6 +766,7 @@ def main() -> int:
             "upload_enabled": upload_config is not None,
             "upload_batch_size": args.upload_batch_size if upload_config is not None else None,
             "upload_batch_pending": len(pending_upload_items),
+            "collect_batch_pending": len(pending_collected_runs),
             "upload_batches_done": upload_batches_done,
             "current": current,
             "current_path": current_path,
@@ -768,117 +784,187 @@ def main() -> int:
 
     _write_state(_snapshot(status="running"), state_file=state_file)
 
-    try:
-        while True:
-            if args.limit is not None and processed >= args.limit:
-                break
+    def _collect_one(*, batch_target: int) -> str:
+        """Claim and collect a single queue item; returns 'collected' / 'failed' / 'queue_empty'.
 
-            claim = claim_one(root, targets)
-            if claim is None:
-                break
+        On success, appends a CollectedRun to pending_collected_runs (when upload is
+        enabled) and emits a recent entry. The actual conversion is deferred to phase 2
+        so collect→convert→upload can be run as three serial phases per batch.
+        """
+        nonlocal processed, done_count, fail_count
 
-            claim_started_at_iso = datetime.now().isoformat(timespec="seconds")
-            claim_t0 = time.time()
+        claim = claim_one(root, targets)
+        if claim is None:
+            return "queue_empty"
+
+        claim_started_at_iso = datetime.now().isoformat(timespec="seconds")
+        claim_t0 = time.time()
+        if upload_config is not None:
+            record_worker_manifest_start(upload_config, claim)
+        _write_state(_snapshot(
+            status="running",
+            current=claim.name,
+            current_path=str(claim.running_path),
+            current_started_at=claim_started_at_iso,
+        ), state_file=state_file)
+
+        run_tag = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{claim.task_type}_{claim.sample_index:04d}"
+        if claim.task_type == "sfp":
+            effective_policy = args.policy_sfp or args.policy
+        elif claim.task_type == "sc":
+            effective_policy = args.policy_sc or args.policy
+        else:
+            effective_policy = args.policy
+        print(
+            f"[claim] {claim.name} → running "
+            f"(policy={effective_policy}, batch_slot={len(pending_collected_runs) + 1}/{batch_target})"
+        )
+
+        rc = run_one(
+            claim.running_path,
+            policy=effective_policy,
+            act_model_path=args.act_model_path,
+            ground_truth=args.ground_truth,
+            use_compressed=args.use_compressed,
+            collect_episode=args.collect_episode,
+            output_root=args.output_root,
+            run_tag=run_tag,
+            timeout_sec=args.timeout,
+            log_path=log_path,
+            headless=args.headless,
+        )
+
+        duration_sec = int(time.time() - claim_t0)
+        processed += 1
+
+        if rc == 0:
+            done_path = mark_done(claim, root)
+            done_count += 1
+            print(f"[done ] {claim.name} (rc=0)")
             if upload_config is not None:
-                record_worker_manifest_start(upload_config, claim)
-            _write_state(_snapshot(
-                status="running",
-                current=claim.name,
-                current_path=str(claim.running_path),
-                current_started_at=claim_started_at_iso,
-            ), state_file=state_file)
-
-            run_tag = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{claim.task_type}_{claim.sample_index:04d}"
-            # task별 policy dispatch — 미지정 시 --policy 값 사용
-            if claim.task_type == "sfp":
-                effective_policy = args.policy_sfp or args.policy
-            elif claim.task_type == "sc":
-                effective_policy = args.policy_sc or args.policy
-            else:
-                effective_policy = args.policy
-            print(f"[claim] {claim.name} → running (policy={effective_policy})")
-
-            rc = run_one(
-                claim.running_path,
-                policy=effective_policy,
-                act_model_path=args.act_model_path,
-                ground_truth=args.ground_truth,
-                use_compressed=args.use_compressed,
-                collect_episode=args.collect_episode,
-                output_root=args.output_root,
-                run_tag=run_tag,
-                timeout_sec=args.timeout,
-                log_path=log_path,
-                headless=args.headless,
-            )
-
-            duration_sec = int(time.time() - claim_t0)
-            if rc == 0:
-                done_path = mark_done(claim, root)
-                done_count += 1
-                result_label = "done"
-                print(f"[done ] {claim.name} (rc=0)")
-                upload_result: dict[str, Any] | None = None
-                if upload_config is not None:
-                    prepared_item, upload_result = prepare_lerobot_upload_item(
-                        config=upload_config,
-                        claim=claim,
-                        done_path=done_path,
-                        output_root=args.output_root,
-                        run_tag=run_tag,
-                        collect_episode=args.collect_episode,
-                    )
-                    if prepared_item is not None:
-                        pending_upload_items.append(prepared_item)
-                        result_label = "converted"
-                        print(
-                            f"[upload-pending] {claim.name} converted "
-                            f"({len(pending_upload_items)}/{args.upload_batch_size})"
-                        )
-                        if len(pending_upload_items) >= args.upload_batch_size:
-                            upload_result = _flush_upload_batch()
-                            if upload_result and upload_result.get("ok"):
-                                result_label = "uploaded"
-                            else:
-                                result_label = "upload_failed"
-                    else:
-                        upload_fail_count += 1
-                        result_label = "upload_failed"
-                        print(
-                            f"[upload-fail] {claim.name} "
-                            f"stage={upload_result.get('stage')}"
-                        )
-            else:
-                if upload_config is not None:
-                    record_worker_manifest_failure(upload_config, claim, return_code=rc)
-                mark_failed(claim, root)
-                fail_count += 1
-                result_label = "failed"
-                print(f"[fail ] {claim.name} (rc={rc})")
-
-            recent_item = {
+                pending_collected_runs.append(CollectedRun(
+                    claim=claim,
+                    done_path=done_path,
+                    run_tag=run_tag,
+                    collect_started_at=claim_started_at_iso,
+                    collect_duration_sec=duration_sec,
+                ))
+            recent.insert(0, {
                 "name": claim.name,
-                "result": result_label,
+                "result": "done",
                 "duration_sec": duration_sec,
                 "finished_at": datetime.now().isoformat(timespec="seconds"),
-            }
-            if upload_config is not None and rc == 0:
-                recent_item["upload_stage"] = (upload_result or {}).get("stage")
-            recent.insert(0, recent_item)
-            del recent[5:]
-
-            processed += 1
-
-        final_upload_result = _flush_upload_batch()
-        if final_upload_result is not None:
-            recent.insert(0, {
-                "name": final_upload_result.get("batch_item_id", f"batch_{upload_batch_index:04d}"),
-                "result": "uploaded" if final_upload_result.get("ok") else "upload_failed",
-                "duration_sec": 0,
-                "finished_at": datetime.now().isoformat(timespec="seconds"),
-                "upload_stage": final_upload_result.get("stage"),
             })
             del recent[5:]
+            return "collected"
+
+        if upload_config is not None:
+            record_worker_manifest_failure(upload_config, claim, return_code=rc)
+        mark_failed(claim, root)
+        fail_count += 1
+        print(f"[fail ] {claim.name} (rc={rc})")
+        recent.insert(0, {
+            "name": claim.name,
+            "result": "failed",
+            "duration_sec": duration_sec,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        del recent[5:]
+        return "failed"
+
+    def _convert_collected_batch() -> None:
+        """Phase 2: convert every CollectedRun gathered in phase 1 into a PreparedLerobotItem."""
+        nonlocal current_phase, upload_fail_count
+        if upload_config is None or not pending_collected_runs:
+            return
+
+        current_phase = "converting"
+        runs_to_convert = list(pending_collected_runs)
+        pending_collected_runs.clear()
+        for run in runs_to_convert:
+            _write_state(_snapshot(
+                status="running",
+                current=run.claim.name,
+                current_path=str(run.claim.running_path),
+                current_started_at=run.collect_started_at,
+            ), state_file=state_file)
+            prepared_item, upload_result = prepare_lerobot_upload_item(
+                config=upload_config,
+                claim=run.claim,
+                done_path=run.done_path,
+                output_root=args.output_root,
+                run_tag=run.run_tag,
+                collect_episode=args.collect_episode,
+            )
+            if prepared_item is not None:
+                pending_upload_items.append(prepared_item)
+                print(
+                    f"[upload-pending] {run.claim.name} converted "
+                    f"({len(pending_upload_items)}/{args.upload_batch_size})"
+                )
+            else:
+                upload_fail_count += 1
+                print(
+                    f"[upload-fail] {run.claim.name} "
+                    f"stage={(upload_result or {}).get('stage')}"
+                )
+                recent.insert(0, {
+                    "name": run.claim.name,
+                    "result": "convert_failed",
+                    "duration_sec": 0,
+                    "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    "upload_stage": (upload_result or {}).get("stage"),
+                })
+                del recent[5:]
+
+    def _record_batch_recent_entry(result: dict[str, Any]) -> None:
+        recent.insert(0, {
+            "name": result.get("batch_item_id", f"batch_{upload_batch_index:04d}"),
+            "result": "uploaded" if result.get("ok") else "upload_failed",
+            "duration_sec": 0,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "upload_stage": result.get("stage"),
+        })
+        del recent[5:]
+
+    try:
+        while True:
+            current_phase = "collecting"
+            batch_target = (
+                args.upload_batch_size if upload_config is not None else 1
+            )
+            batch_filled = 0
+            no_more_work = False
+
+            # Phase 1: claim and run up to batch_target items. Both successes and
+            # collection failures fill a batch slot — this bounds work per batch and
+            # prevents an unrelenting failure stream from blocking phase 2/3 forever.
+            while batch_filled < batch_target:
+                if args.limit is not None and processed >= args.limit:
+                    no_more_work = True
+                    break
+                outcome = _collect_one(batch_target=batch_target)
+                if outcome == "queue_empty":
+                    no_more_work = True
+                    break
+                batch_filled += 1
+
+            _convert_collected_batch()
+
+            if upload_config is not None and pending_upload_items:
+                current_phase = "uploading"
+                _write_state(_snapshot(
+                    status="running",
+                    current=f"batch_{upload_batch_index + 1:04d}",
+                ), state_file=state_file)
+                batch_result = _flush_upload_batch()
+                if batch_result is not None:
+                    _record_batch_recent_entry(batch_result)
+
+            current_phase = "idle"
+
+            if no_more_work:
+                break
 
         elapsed = int(time.time() - t0)
         counts_after = {t: queue_counts(root, t) for t in (targets or list(TASK_TYPES))}
