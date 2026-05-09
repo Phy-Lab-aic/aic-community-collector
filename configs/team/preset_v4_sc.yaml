@@ -7,23 +7,21 @@
 # its own preset_hash.
 #
 # Scope layout (2 SC trials = 2 rails × 1 port each):
-#   trial_1 : SC rail 0, sc_port_0
-#   trial_2 : SC rail 1, sc_port_1   (== v3 trial_3)
+#   trial_11 : SC rail 0, sc_port_0
+#   trial_12 : SC rail 1, sc_port_1   (== v3 trial_3)
+#
+# Trial ids continue the SFP numbering (1..10) so the merged v4 layout
+# stays trial_1..trial_12 across both halves. Each preset file still has
+# its own preset_hash and ledger; the shared numbering is purely for human
+# readability when cross-referencing with `preset_v4_12scope.yaml`.
 #
 # Distribution (300 ep total, 150 per scope, 1 member):
-#   - M0 한준모: trial_1 + trial_2   (150 + 150 = 300)
+#   - M0 한준모: trial_11 + trial_12   (150 + 150 = 300)
 #
 # M0 owns SC alone because SC is the smaller half and concentrating it on a
 # single dedicated machine avoids needing to keep an SC scene loaded on a
 # multi-task collector. Add a second SC member later if 300 ep is too slow
 # for a single shift.
-#
-# Note: trial ids are local to this preset (not the merged v4 numbering),
-# so this file's `trial_1` / `trial_2` correspond to the merged
-# `trial_11` / `trial_12` in `preset_v4_12scope.yaml`. The team_preset
-# tooling treats every preset file as its own contract via preset_hash, so
-# the renumbering is safe as long as nobody mixes ledger entries between
-# the two halves.
 #
 # Score gate stays at 94 (see docs/team-1800-round.md).
 
@@ -49,15 +47,15 @@ tasks:
   sfp_default_count: 0
   sc_default_count: 0
 trials:
-  trial_1:
+  trial_11:
     task_type: sc
     fixed_target: {rail: 0, port: sc_port_0}
-  trial_2:
+  trial_12:
     task_type: sc
     fixed_target: {rail: 1, port: sc_port_1}
 members:
   - id: M0
     name: 한준모
     assignments:
-      - {trial: trial_1, count: 150}
-      - {trial: trial_2, count: 150}
+      - {trial: trial_11, count: 150}
+      - {trial: trial_12, count: 150}
