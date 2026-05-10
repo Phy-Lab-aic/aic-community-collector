@@ -94,12 +94,14 @@ def claim_one(
 
 
 def mark_done(claim: ClaimedConfig, root: Path) -> Path:
-    """running→done 이동. 덮어쓰지 않음 (이미 있으면 IOError)."""
+    """running→done 이동. 이미 done/에 있으면 running/ 파일만 정리하고 성공 처리."""
     done = queue_dir(root, claim.task_type, QueueState.DONE)
     done.mkdir(parents=True, exist_ok=True)
     dst = done / claim.running_path.name
     if dst.exists():
-        raise FileExistsError(f"done/에 이미 존재: {dst}")
+        # 이전 워커 크래시로 done/에 이미 있는 경우 — running/ 잔류 파일만 제거
+        claim.running_path.unlink(missing_ok=True)
+        return dst
     claim.running_path.rename(dst)
     return dst
 
