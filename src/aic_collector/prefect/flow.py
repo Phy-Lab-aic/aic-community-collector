@@ -256,7 +256,7 @@ def restart_docker_task(container: str = "aic_eval") -> None:
             log_path="/tmp/e2e_docker_restart.log",
             env=env,
         )
-        time.sleep(5)
+        time.sleep(15)  # zenoh 라우터 초기화 대기 (5s → 15s)
 
 
 @task(name="launch-engine")
