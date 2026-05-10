@@ -372,7 +372,14 @@ def run_policy_task(
         env = _base_env()
         env.update(policy_env)
         env["AIC_DEMO_DIR"] = demo_dir
-        env["AIC_F5_ENABLED"] = os.environ.get("AIC_F5_ENABLED", "1")
+        # 데이터 수집 시 F5 조기 종료 비활성화 — insertion_event가 엔진의
+        # contact 확정보다 먼저 발행될 경우 scoring이 0이 되는 것을 방지.
+        # collect_episode=True(수집 모드)일 때는 엔진이 scoring을 완료할 때까지
+        # policy가 실행되도록 F5를 끈다.
+        if collect_episode:
+            env["AIC_F5_ENABLED"] = "0"
+        else:
+            env["AIC_F5_ENABLED"] = os.environ.get("AIC_F5_ENABLED", "1")
         env["AIC_COLLECT_EPISODE"] = "1" if collect_episode else "0"
 
         policy_class = policy_env.get("POLICY_CLASS", POLICY_CLASS)
