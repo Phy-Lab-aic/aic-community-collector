@@ -445,6 +445,16 @@ def cleanup_task(
             grace_sec=3.0,
             poll_interval=0.1,
         )
+        # ROS2 daemon 정리 — 이전 run의 오염된 rclpy context가
+        # 다음 run에 상속되는 것을 방지.
+        env = _base_env()
+        run_shell_process(
+            ["pixi", "run", "ros2", "daemon", "stop"],
+            log_path="/tmp/e2e_ros2_daemon_stop.log",
+            env=env,
+            cwd=PIXI_CWD,
+        )
+        print("[cleanup] ros2 daemon stopped")
 
 
 def _build_run_summary_markdown(
