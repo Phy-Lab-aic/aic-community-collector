@@ -141,3 +141,40 @@ members:
   - id: M12
     name: 한준모
     assignment: {trial: trial_12, count: 150}
+  # ---------------------------------------------------------------------
+  # Supplement round (M13 + M14): 576 ep top-up to reach 200 ep / scope.
+  # Both IDs owned by 한준모 (continuity with M11 + M12). Split 3 : 7
+  # across 11 trials (trial_9 already at 200 -> excluded from both lists).
+  # Each ID enqueues all 11 trial assignments at once when selected in
+  # the team UI. shard_stride keeps configs disjoint from M1..M12, so
+  # base_seed stays at 43.
+  # M13 total = 173, M14 total = 403, grand total = 576.
+  # ---------------------------------------------------------------------
+  - id: M13
+    name: 한준모
+    assignments:
+      - {trial: trial_1,  count: 15}
+      - {trial: trial_2,  count: 15}
+      - {trial: trial_3,  count: 18}
+      - {trial: trial_4,  count: 30}
+      - {trial: trial_5,  count:  2}
+      - {trial: trial_6,  count: 15}
+      - {trial: trial_7,  count: 15}
+      - {trial: trial_8,  count: 15}
+      - {trial: trial_10, count: 16}
+      - {trial: trial_11, count: 17}
+      - {trial: trial_12, count: 15}
+  - id: M14
+    name: 한준모
+    assignments:
+      - {trial: trial_1,  count: 35}
+      - {trial: trial_2,  count: 35}
+      - {trial: trial_3,  count: 42}
+      - {trial: trial_4,  count: 70}
+      - {trial: trial_5,  count:  5}
+      - {trial: trial_6,  count: 35}
+      - {trial: trial_7,  count: 35}
+      - {trial: trial_8,  count: 35}
+      - {trial: trial_10, count: 36}
+      - {trial: trial_11, count: 40}
+      - {trial: trial_12, count: 35}
