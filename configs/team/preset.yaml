@@ -141,3 +141,77 @@ members:
   - id: M12
     name: 한준모
     assignment: {trial: trial_12, count: 150}
+  # ---------------------------------------------------------------------
+  # Supplement round (M13 + M14): 576 ep top-up to reach 200 ep / scope.
+  # Both IDs owned by 한준모 (continuity with M11 + M12). Split 3 : 7
+  # across 11 trials (trial_9 already at 200 -> no M13_t9 / M14_t9 row).
+  # Each sub-ID gets its own member_index, so shard_stride keeps configs
+  # disjoint from M1..M12 (base_seed=43 unchanged).
+  # M13 total = 173, M14 total = 403, grand total = 576.
+  # ---------------------------------------------------------------------
+  - id: M13_t1
+    name: 한준모
+    assignment: {trial: trial_1, count: 15}
+  - id: M13_t2
+    name: 한준모
+    assignment: {trial: trial_2, count: 15}
+  - id: M13_t3
+    name: 한준모
+    assignment: {trial: trial_3, count: 18}
+  - id: M13_t4
+    name: 한준모
+    assignment: {trial: trial_4, count: 30}
+  - id: M13_t5
+    name: 한준모
+    assignment: {trial: trial_5, count: 2}
+  - id: M13_t6
+    name: 한준모
+    assignment: {trial: trial_6, count: 15}
+  - id: M13_t7
+    name: 한준모
+    assignment: {trial: trial_7, count: 15}
+  - id: M13_t8
+    name: 한준모
+    assignment: {trial: trial_8, count: 15}
+  - id: M13_t10
+    name: 한준모
+    assignment: {trial: trial_10, count: 16}
+  - id: M13_t11
+    name: 한준모
+    assignment: {trial: trial_11, count: 17}
+  - id: M13_t12
+    name: 한준모
+    assignment: {trial: trial_12, count: 15}
+  - id: M14_t1
+    name: 한준모
+    assignment: {trial: trial_1, count: 35}
+  - id: M14_t2
+    name: 한준모
+    assignment: {trial: trial_2, count: 35}
+  - id: M14_t3
+    name: 한준모
+    assignment: {trial: trial_3, count: 42}
+  - id: M14_t4
+    name: 한준모
+    assignment: {trial: trial_4, count: 70}
+  - id: M14_t5
+    name: 한준모
+    assignment: {trial: trial_5, count: 5}
+  - id: M14_t6
+    name: 한준모
+    assignment: {trial: trial_6, count: 35}
+  - id: M14_t7
+    name: 한준모
+    assignment: {trial: trial_7, count: 35}
+  - id: M14_t8
+    name: 한준모
+    assignment: {trial: trial_8, count: 35}
+  - id: M14_t10
+    name: 한준모
+    assignment: {trial: trial_10, count: 36}
+  - id: M14_t11
+    name: 한준모
+    assignment: {trial: trial_11, count: 40}
+  - id: M14_t12
+    name: 한준모
+    assignment: {trial: trial_12, count: 35}
