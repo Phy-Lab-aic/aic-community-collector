@@ -1,0 +1,164 @@
+# Supplemental round preset (v4) — top-up to reach 200 ep / scope.
+# Edits are changes to the team contract — open a PR.
+#
+# Motivation: after the v4 12-scope round, unique-episode counts per trial
+# (post-dedup of overlapping config_id rows) sit below the 200-per-scope
+# target. This supplement preset closes the 576 ep shortfall across 11
+# trials (trial_9 already hit 200 in the v4 round, so it is skipped).
+#
+# Worker split: two operators (M13, M14) absorb the full shortfall at a
+# 3 : 7 ratio (M13 = 173 ep, M14 = 403 ep). Both IDs are owned by 한준모,
+# who already owned M11 + M12 in the v4 round, so a single station can
+# stay loaded with SC + SFP scenes without an additional handover.
+#
+# Per-trial shortfall and 3 : 7 split:
+#   trial_1  :  50 -> M13_t1   15 / M14_t1   35
+#   trial_2  :  50 -> M13_t2   15 / M14_t2   35
+#   trial_3  :  60 -> M13_t3   18 / M14_t3   42
+#   trial_4  : 100 -> M13_t4   30 / M14_t4   70   (largest gap)
+#   trial_5  :   7 -> M13_t5    2 / M14_t5    5
+#   trial_6  :  50 -> M13_t6   15 / M14_t6   35
+#   trial_7  :  50 -> M13_t7   15 / M14_t7   35
+#   trial_8  :  50 -> M13_t8   15 / M14_t8   35
+#   trial_9  :   0 -> skipped (already at 200)
+#   trial_10 :  52 -> M13_t10  16 / M14_t10  36
+#   trial_11 :  57 -> M13_t11  17 / M14_t11  40
+#   trial_12 :  50 -> M13_t12  15 / M14_t12  35
+#   Total: 576 (= 173 M13 + 403 M14).
+#
+# Scope layout is identical to preset_v4_12scope.yaml. Sub-IDs (M13_tN,
+# M14_tN) keep the team UI's "one row = one trial" pattern so operators
+# pick the exact (rail, port) they are about to collect. Member rows are
+# ordered M13 first, then M14, with trials in ascending order within each
+# owner.
+#
+# Seed namespace: shard_stride is unchanged (100000), and base_seed is
+# bumped to 44 so the supplement round does not collide with v4's
+# base_seed=43 sampling lattice when LHS regenerates configs.
+#
+# Score gate: same 94 threshold as the v4 round — keep parity until we
+# decide to raise it. Trials < 94 get requeued via `aic-collector`
+# reconcile-score + requeue-low-score.
+
+version: 4
+team:
+  base_seed: 44
+  shard_stride: 100000
+  index_width: 6
+sampling:
+  strategy: lhs
+  ranges:
+    nic_translation: [-0.0215, 0.0234]
+    nic_yaw: [-0.1745, 0.1745]
+    sc_translation: [-0.06, 0.055]
+    gripper_xy: 0.002
+    gripper_z: 0.002
+    gripper_rpy: 0.04
+scene:
+  nic_count_range: [1, 1]
+  sc_count_range: [1, 1]
+  target_cycling: true
+tasks:
+  sfp_default_count: 0
+  sc_default_count: 0
+trials:
+  trial_1:
+    task_type: sfp
+    fixed_target: {rail: 0, port: sfp_port_0}
+  trial_2:
+    task_type: sfp
+    fixed_target: {rail: 0, port: sfp_port_1}
+  trial_3:
+    task_type: sfp
+    fixed_target: {rail: 1, port: sfp_port_0}
+  trial_4:
+    task_type: sfp
+    fixed_target: {rail: 1, port: sfp_port_1}
+  trial_5:
+    task_type: sfp
+    fixed_target: {rail: 2, port: sfp_port_0}
+  trial_6:
+    task_type: sfp
+    fixed_target: {rail: 2, port: sfp_port_1}
+  trial_7:
+    task_type: sfp
+    fixed_target: {rail: 3, port: sfp_port_0}
+  trial_8:
+    task_type: sfp
+    fixed_target: {rail: 3, port: sfp_port_1}
+  trial_10:
+    task_type: sfp
+    fixed_target: {rail: 4, port: sfp_port_1}
+  trial_11:
+    task_type: sc
+    fixed_target: {rail: 0, port: sc_port_0}
+  trial_12:
+    task_type: sc
+    fixed_target: {rail: 1, port: sc_port_1}
+members:
+  - id: M13_t1
+    name: 한준모
+    assignment: {trial: trial_1, count: 15}
+  - id: M13_t2
+    name: 한준모
+    assignment: {trial: trial_2, count: 15}
+  - id: M13_t3
+    name: 한준모
+    assignment: {trial: trial_3, count: 18}
+  - id: M13_t4
+    name: 한준모
+    assignment: {trial: trial_4, count: 30}
+  - id: M13_t5
+    name: 한준모
+    assignment: {trial: trial_5, count: 2}
+  - id: M13_t6
+    name: 한준모
+    assignment: {trial: trial_6, count: 15}
+  - id: M13_t7
+    name: 한준모
+    assignment: {trial: trial_7, count: 15}
+  - id: M13_t8
+    name: 한준모
+    assignment: {trial: trial_8, count: 15}
+  - id: M13_t10
+    name: 한준모
+    assignment: {trial: trial_10, count: 16}
+  - id: M13_t11
+    name: 한준모
+    assignment: {trial: trial_11, count: 17}
+  - id: M13_t12
+    name: 한준모
+    assignment: {trial: trial_12, count: 15}
+  - id: M14_t1
+    name: 한준모
+    assignment: {trial: trial_1, count: 35}
+  - id: M14_t2
+    name: 한준모
+    assignment: {trial: trial_2, count: 35}
+  - id: M14_t3
+    name: 한준모
+    assignment: {trial: trial_3, count: 42}
+  - id: M14_t4
+    name: 한준모
+    assignment: {trial: trial_4, count: 70}
+  - id: M14_t5
+    name: 한준모
+    assignment: {trial: trial_5, count: 5}
+  - id: M14_t6
+    name: 한준모
+    assignment: {trial: trial_6, count: 35}
+  - id: M14_t7
+    name: 한준모
+    assignment: {trial: trial_7, count: 35}
+  - id: M14_t8
+    name: 한준모
+    assignment: {trial: trial_8, count: 35}
+  - id: M14_t10
+    name: 한준모
+    assignment: {trial: trial_10, count: 36}
+  - id: M14_t11
+    name: 한준모
+    assignment: {trial: trial_11, count: 40}
+  - id: M14_t12
+    name: 한준모
+    assignment: {trial: trial_12, count: 35}
