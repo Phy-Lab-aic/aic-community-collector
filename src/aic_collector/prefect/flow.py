@@ -1015,6 +1015,7 @@ def run_prebuilt_engine_config(
     collect_episode: bool = False,
     output_root: str = "~/aic_community_e2e",
     headless: bool = False,
+    policy_timeout: int | None = None,
 ) -> dict:
     """이미 생성된 엔진 config 파일로 1 run 실행 (큐 소비용).
 
@@ -1070,7 +1071,7 @@ def run_prebuilt_engine_config(
         republish_pids = launch_republish_task(use_compressed, run_tag, run_idx)
         camera_bag_pid = launch_camera_bag_task(run_tag, run_idx)
         policy_env = build_policy_env(policy_default, per_trial, act_model_path)
-        policy_timeout = trials_count * 200 + 60
+        policy_timeout = policy_timeout if policy_timeout is not None else trials_count * 200 + 60
         run_policy_task(
             policy_env, demo_dir, run_tag, run_idx,
             policy_timeout=policy_timeout, collect_episode=collect_episode,

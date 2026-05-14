@@ -58,6 +58,10 @@ def main() -> int:
             "기본 GUI 표시. 대량 수집 시 --headless 권장."
         ),
     )
+    parser.add_argument(
+        "--policy-timeout", type=int, default=None,
+        help="policy 실행 타임아웃 (초). 미지정 시 trial 수 × 200 + 60. OpenPI 사용 시 600 이상 권장.",
+    )
 
     args = parser.parse_args()
 
@@ -81,6 +85,7 @@ def main() -> int:
             collect_episode=args.collect_episode,
             output_root=args.output_root,
             headless=args.headless,
+            policy_timeout=args.policy_timeout,
         )
         return 0 if result.get("success", False) else 1
 

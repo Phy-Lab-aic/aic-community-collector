@@ -7,6 +7,7 @@ _INNER_CLASS_MAP = {
     "cheatcode": "aic_example_policies.ros.CheatCodeInner",
     "hybrid": "aic_example_policies.ros.RunACTHybrid",
     "act": "aic_example_policies.ros.RunACTv1",
+    "openpi": "aic_example_policies.ros.RunOpenPI",
 }
 
 POLICY_CLASS = "aic_example_policies.ros.CollectDispatchWrapper"
@@ -50,6 +51,15 @@ def deploy_policies(project_dir: str | Path) -> int:
         shutil.copy2(f, dst / f.name)
         print(f"[OK] {f.name} → 배포 완료")
         count += 1
+
+    # OpenPI 추론에 필요한 assets/ 폴더 (norm_stats.json 등) 복사
+    src_assets = src / "assets"
+    if src_assets.is_dir():
+        dst_assets = dst / "assets"
+        if dst_assets.exists():
+            shutil.rmtree(dst_assets)
+        shutil.copytree(src_assets, dst_assets)
+        print(f"[OK] assets/ → 배포 완료")
 
     aic_autocode = (
         Path.home()

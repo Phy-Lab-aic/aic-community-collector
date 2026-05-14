@@ -507,6 +507,7 @@ def run_one(
     timeout_sec: int | None,
     log_path: Path | None,
     headless: bool = False,
+    policy_timeout: int | None = None,
 ) -> int:
     """aic-prefect-run --engine-config 를 subprocess로 실행하고 리턴코드 반환."""
     cmd = [
@@ -522,6 +523,8 @@ def run_one(
     ]
     if act_model_path:
         cmd += ["--act-model-path", act_model_path]
+    if policy_timeout is not None:
+        cmd += ["--policy-timeout", str(policy_timeout)]
 
     out = open(log_path, "ab") if log_path else subprocess.DEVNULL
     try:
@@ -561,6 +564,10 @@ def main() -> int:
     parser.add_argument(
         "--timeout", type=int, default=None,
         help="config 1개당 최대 실행 시간(초). 넘으면 failed.",
+    )
+    parser.add_argument(
+        "--policy-timeout", type=int, default=None,
+        help="policy 실행 타임아웃(초). 미지정 시 trial 수 × 200 + 60. OpenPI 사용 시 600 이상 권장.",
     )
     parser.add_argument(
         "--recover", action="store_true",
@@ -835,6 +842,7 @@ def main() -> int:
             timeout_sec=args.timeout,
             log_path=log_path,
             headless=args.headless,
+            policy_timeout=args.policy_timeout,
         )
 
         duration_sec = int(time.time() - claim_t0)
